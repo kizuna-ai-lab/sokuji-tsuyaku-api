@@ -65,12 +65,10 @@ async def synthesize(  # noqa: C901
         body.model, model_card_data, executor_registry.text_to_speech, model_tags
     )
 
-    if isinstance(executor.model_manager, KokoroModelManager):
-        if body.speed < 0.5 or body.speed > 2.0:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Speed must be between 0.5 and 2.0, got {body.speed}",
-            )
+    try:
+        if isinstance(executor.model_manager, KokoroModelManager):
+            if body.speed < 0.5 or body.speed > 2.0:
+                raise ValueError(f"Speed must be between 0.5 and 2.0, got {body.speed}")
         if body.voice not in [v.name for v in kokoro.VOICES]:
             if body.voice in OPENAI_SUPPORTED_SPEECH_VOICE_NAMES:
                 logger.warning(
@@ -103,12 +101,9 @@ async def synthesize(  # noqa: C901
                     async for audio_bytes in audio_generator
                 )
             return StreamingResponse(audio_generator, media_type=f"audio/{body.response_format}")
-    elif isinstance(executor.model_manager, PiperModelManager):
-        if body.speed < 0.25 or body.speed > 4.0:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Speed must be between 0.25 and 4.0, got {body.speed}",
-            )
+        elif isinstance(executor.model_manager, PiperModelManager):
+            if body.speed < 0.25 or body.speed > 4.0:
+                raise ValueError(f"Speed must be between 0.25 and 4.0, got {body.speed}")
         # TODO: maybe check voice
         with executor.model_manager.load_model(body.model) as piper_tts:
             # TODO: async generator
@@ -131,7 +126,12 @@ async def synthesize(  # noqa: C901
                 )
             return StreamingResponse(audio_generator, media_type=f"audio/{body.response_format}")
 
-    raise HTTPException(
-        status_code=500,
-        detail=f"Executor for model '{body.model}' exists but is not properly configured. This is a bug.",
-    )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Executor for model '{body.model}' exists but is not properly configured. This is a bug.",
+        )
+    except ValueError as e:
+        if "speed must be between" in str(e).lower():
+            logger.warning("Unsupported speed value requested for speech synthesis")
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        raise
