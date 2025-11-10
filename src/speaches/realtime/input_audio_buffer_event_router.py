@@ -10,7 +10,7 @@ from numpy.typing import NDArray
 import openai
 from openai.types.beta.realtime.error_event import Error
 
-from speaches.audio import audio_samples_from_file
+from speaches.audio import audio_samples_from_file, resample_audio_data
 from speaches.realtime.context import SessionContext
 from speaches.realtime.event_router import EventRouter
 from speaches.realtime.input_audio_buffer import (
@@ -46,20 +46,13 @@ empty_input_audio_buffer_commit_error = Error(
 type SpeechTimestamp = dict[Literal["start", "end"], int]
 
 
-# NOTE: `signal.resample_poly` **might** be a better option for resampling audio data
-# TODO: also found in src/speaches/audio.py. Remove duplication
-def resample_audio_data(data: NDArray[np.float32], sample_rate: int, target_sample_rate: int) -> NDArray[np.float32]:
-    ratio = target_sample_rate / sample_rate
-    target_length = int(len(data) * ratio)
-    return np.interp(np.linspace(0, len(data), target_length), np.arange(len(data)), data).astype(np.float32)
-
-
 # TODO: also found in src/speaches/routers/vad.py. Remove duplication
 def to_ms_speech_timestamps(speech_timestamps: list[SpeechTimestamp]) -> list[SpeechTimestamp]:
     for i in range(len(speech_timestamps)):
         speech_timestamps[i]["start"] = speech_timestamps[i]["start"] // MS_SAMPLE_RATE
         speech_timestamps[i]["end"] = speech_timestamps[i]["end"] // MS_SAMPLE_RATE
     return speech_timestamps
+
 
 
 def vad_detection_flow(
@@ -123,7 +116,7 @@ def vad_detection_flow(
 
 @event_router.register("input_audio_buffer.append")
 def handle_input_audio_buffer_append(ctx: SessionContext, event: InputAudioBufferAppendEvent) -> None:
-    audio_chunk = audio_samples_from_file(BytesIO(base64.b64decode(event.audio)))
+    audio_chunk = audio_samples_from_file(BytesIO(base64.b64decode(event.audio)), 24000)
     # convert the audio data from 24kHz (sample rate defined in the API spec) to 16kHz (sample rate used by the VAD and for transcription)
     audio_chunk = resample_audio_data(audio_chunk, 24000, 16000)
     input_audio_buffer_id = next(reversed(ctx.input_audio_buffers))
