@@ -5,8 +5,6 @@ from typing import Literal
 
 from faster_whisper.transcribe import get_speech_timestamps
 from faster_whisper.vad import VadOptions
-import numpy as np
-from numpy.typing import NDArray
 import openai
 from openai.types.beta.realtime.error_event import Error
 
@@ -52,7 +50,6 @@ def to_ms_speech_timestamps(speech_timestamps: list[SpeechTimestamp]) -> list[Sp
         speech_timestamps[i]["start"] = speech_timestamps[i]["start"] // MS_SAMPLE_RATE
         speech_timestamps[i]["end"] = speech_timestamps[i]["end"] // MS_SAMPLE_RATE
     return speech_timestamps
-
 
 
 def vad_detection_flow(
