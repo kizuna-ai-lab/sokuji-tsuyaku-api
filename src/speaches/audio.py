@@ -76,26 +76,65 @@ def audio_samples_from_file(file: BinaryIO, sample_rate: int) -> NDArray[np.floa
 class Audio:
     def __init__(
         self,
-        data: NDArray[np.float32] = np.array([], dtype=np.float32),
-        start: float = 0.0,
+        data: NDArray[np.float32],
+        sample_rate: int = SAMPLES_PER_SECOND,
     ) -> None:
         self.data = data
-        self.start = start
+        self.sample_rate = sample_rate
 
     def __repr__(self) -> str:
-        return f"Audio(start={self.start:.2f}, end={self.end:.2f})"
-
-    @property
-    def end(self) -> float:
-        return self.start + self.duration
+        return f"Audio(duration={self.duration:.2f}s, sample_rate={self.sample_rate}Hz, samples={len(self.data)})"
 
     @property
     def duration(self) -> float:
-        return len(self.data) / SAMPLES_PER_SECOND
+        return len(self.data) / self.sample_rate
 
-    def after(self, ts: float) -> Audio:
-        assert ts <= self.duration
-        return Audio(self.data[int(ts * SAMPLES_PER_SECOND) :], start=ts)
+    @property
+    def size_in_bits(self) -> int:
+        return self.data.nbytes * 8
+
+    @property
+    def size_in_bytes(self) -> int:
+        return self.data.nbytes
+
+    @property
+    def size_in_kb(self) -> float:
+        return self.size_in_bytes / 1024.0
+
+    @property
+    def size_in_mb(self) -> float:
+        return self.size_in_bytes / (1024.0 * 1024.0)
 
     def extend(self, data: NDArray[np.float32]) -> None:
         self.data = np.append(self.data, data)
+
+    def as_bytes(self) -> bytes:
+        # Clip to [-1.0, 1.0] to avoid overflow and scale to int16 range
+        audio = (self.data * 32767).astype(np.int16)
+        return audio.tobytes()
+
+    def to_base64(self) -> str:
+        import base64
+
+        audio_bytes = self.as_bytes()
+        return base64.b64encode(audio_bytes).decode("utf-8")
+
+    def resample(self, target_sample_rate: int) -> Audio:
+        if self.sample_rate == target_sample_rate:
+            return self
+        self.data = resample_audio_data(self.data, self.sample_rate, target_sample_rate)
+        self.sample_rate = target_sample_rate
+        return self
+
+    @classmethod
+    def concatenate(cls, audios: list[Audio]) -> Audio:
+        if not audios:
+            msg = "No audio segments to concatenate"
+            raise ValueError(msg)
+        sample_rate = audios[0].sample_rate
+        for audio in audios:
+            if audio.sample_rate != sample_rate:
+                msg = "All audio segments must have the same sample rate to concatenate"
+                raise ValueError(msg)
+        concatenated_data = np.concatenate([audio.data for audio in audios])
+        return Audio(concatenated_data, sample_rate=sample_rate)
