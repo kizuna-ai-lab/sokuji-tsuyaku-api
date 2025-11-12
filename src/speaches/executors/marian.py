@@ -11,6 +11,7 @@ from transformers import AutoTokenizer
 
 from speaches.api_types import Model
 from speaches.executors.shared.base_model_manager import BaseModelManager
+from speaches.executors.shared.handler_protocol import TextTranslationRequest, TextTranslationResponse
 from speaches.hf_utils import (
     HfModelFilter,
     extract_language_list,
@@ -170,3 +171,28 @@ class MarianModelManager(BaseModelManager[MarianTranslationModel]):
             device=self.marian_config.inference_device,
             compute_type=self.marian_config.compute_type,
         )
+
+    def handle_text_translation_request(
+        self, request: TextTranslationRequest, **kwargs  # noqa: ARG002
+    ) -> TextTranslationResponse:
+        """Handle text translation request following the TextTranslationHandler protocol."""
+        with self.load_model(request.model) as marian:
+            translated_text = marian.translate(request.text)
+
+            # Extract language codes from model ID
+            repo_name = request.model.split("/")[-1]
+            if "opus-mt-" in repo_name:
+                lang_part = repo_name.split("opus-mt-", 1)[1]
+                parts = lang_part.split("-")
+                src_lang = request.source_language or (parts[0] if len(parts) >= 1 else "unknown")
+                tgt_lang = request.target_language or (parts[1] if len(parts) >= 2 else "unknown")
+            else:
+                src_lang = request.source_language or "unknown"
+                tgt_lang = request.target_language or "unknown"
+
+            return TextTranslationResponse(
+                text=translated_text,
+                model=request.model,
+                source_language=src_lang,
+                target_language=tgt_lang,
+            )
