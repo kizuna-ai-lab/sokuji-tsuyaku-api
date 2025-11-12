@@ -1,8 +1,8 @@
 from collections import OrderedDict
 from typing import TYPE_CHECKING
 
-from openai.resources.audio import AsyncTranscriptions
-from openai.resources.chat.completions import AsyncCompletions
+from httpx import AsyncClient
+from openai.resources.audio import AsyncSpeech, AsyncTranscriptions
 
 from speaches.realtime.conversation_event_router import Conversation
 from speaches.realtime.input_audio_buffer import InputAudioBuffer
@@ -17,11 +17,13 @@ class SessionContext:
     def __init__(
         self,
         transcription_client: AsyncTranscriptions,
-        completion_client: AsyncCompletions,
+        translation_client: AsyncClient,
+        speech_client: AsyncSpeech,
         session: Session,
     ) -> None:
         self.transcription_client = transcription_client
-        self.completion_client = completion_client
+        self.translation_client = translation_client
+        self.speech_client = speech_client
 
         self.session = session
 

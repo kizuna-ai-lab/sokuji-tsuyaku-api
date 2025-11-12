@@ -186,8 +186,8 @@ def transcribe_file(  # noqa: C901, PLR0912
             "It only makes sense to provide `timestamp_granularities[]` when `response_format` is set to `verbose_json`. See https://platform.openai.com/docs/api-reference/audio/createTranscription#audio-createtranscription-timestamp_granularities."
         )
 
-    model_card_data = get_model_card_data_or_raise(model)
-    executor = find_executor_for_model_or_raise(model, model_card_data, executor_registry.transcription)
+    model_card_data, model_tags = get_model_card_data_or_raise(model)
+    executor = find_executor_for_model_or_raise(model, model_card_data, executor_registry.transcription, model_tags)
 
     if isinstance(executor.model_manager, WhisperModelManager):
         with executor.model_manager.load_model(model) as whisper:

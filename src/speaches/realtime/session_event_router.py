@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from openai.types.beta.realtime.error_event import Error
 
 from speaches.realtime.event_router import EventRouter
+from speaches.realtime.utils import parse_model_parameter
 from speaches.types.realtime import (
     NOT_GIVEN,
     ErrorEvent,
@@ -54,11 +55,43 @@ def handle_session_update_event(ctx: SessionContext, event: SessionUpdateEvent) 
     ):
         ctx.pubsub.publish_nowait(unsupported_field_error("session.turn_detection.prefix_padding_ms"))
 
+    # Handle composite model parameter if provided
+    if event.session.model != NOT_GIVEN:
+        try:
+            stt_model, tts_model, translation_model = parse_model_parameter(event.session.model)
+            logger.info(f"Parsed model parameter: STT={stt_model}, TTS={tts_model}, Translation={translation_model}")
+
+            # Update the individual model fields
+            if event.session.speech_model == NOT_GIVEN:
+                event.session.speech_model = tts_model
+            if event.session.translation_model == NOT_GIVEN:
+                event.session.translation_model = translation_model
+            if event.session.input_audio_transcription == NOT_GIVEN:
+                event.session.input_audio_transcription = ctx.session.input_audio_transcription.model_copy()
+            if hasattr(event.session.input_audio_transcription, "model"):
+                event.session.input_audio_transcription.model = stt_model
+        except ValueError as e:
+            logger.error(f"Failed to parse model parameter: {e}")
+            ctx.pubsub.publish_nowait(
+                ErrorEvent(
+                    error=Error(
+                        type="invalid_request_error",
+                        message=f"Invalid model format: {e}",
+                    )
+                )
+            )
+            return
+
     session_dict = ctx.session.model_dump()
     session_update_dict = event.session.model_dump(
         exclude_defaults=True,
         # https://docs.pydantic.dev/latest/concepts/serialization/#advanced-include-and-exclude
-        exclude={"input_audio_format": True, "output_audio_format": True, "turn_detection": {"prefix_padding_ms"}},
+        exclude={
+            "input_audio_format": True,
+            "output_audio_format": True,
+            "turn_detection": {"prefix_padding_ms"},
+            "model": True,  # Exclude the composite model field from update
+        },
     )
 
     logger.debug(f"Applying session configuration update: {session_update_dict}")

@@ -21,9 +21,6 @@ from starlette.responses import RedirectResponse
 
 from speaches.dependencies import ApiKeyDependency, get_config
 from speaches.logger import setup_logger
-from speaches.routers.chat import (
-    router as chat_router,
-)
 from speaches.routers.misc import (
     router as misc_router,
 )
@@ -44,6 +41,9 @@ from speaches.routers.speech_embedding import (
 )
 from speaches.routers.stt import (
     router as stt_router,
+)
+from speaches.routers.translations import (
+    router as translations_router,
 )
 from speaches.routers.vad import (
     router as vad_router,
@@ -71,12 +71,16 @@ def create_app() -> FastAPI:
     setup_logger(config.log_level)
     logger = logging.getLogger(__name__)
 
+    # Reduce noise from aiortc during normal disconnect operations
+    # MediaStreamError is expected when clients disconnect
+    logging.getLogger("aiortc.rtcrtpsender").setLevel(logging.ERROR)
+
     logger.debug(f"Config: {config}")
 
     # Create main app WITHOUT global authentication
     app = FastAPI(
         title="Speaches",
-        version="0.8.3",  # TODO: update this on release
+        version="0.2.0",
         license_info={"name": "MIT License", "identifier": "MIT"},
         openapi_tags=TAGS_METADATA,
     )
@@ -109,8 +113,8 @@ def create_app() -> FastAPI:
     if config.api_key is not None:
         http_dependencies.append(ApiKeyDependency)
 
-    app.include_router(chat_router, dependencies=http_dependencies)
     app.include_router(stt_router, dependencies=http_dependencies)
+    app.include_router(translations_router, dependencies=http_dependencies)
     app.include_router(models_router, dependencies=http_dependencies)
     app.include_router(misc_router, dependencies=http_dependencies)
     app.include_router(realtime_rtc_router, dependencies=http_dependencies)

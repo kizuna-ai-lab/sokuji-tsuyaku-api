@@ -6,6 +6,7 @@ if TYPE_CHECKING:
     from speaches.config import Config
 
 from speaches.executors.kokoro import KokoroModelManager, kokoro_model_registry
+from speaches.executors.marian import MarianModelManager, marian_model_registry
 from speaches.executors.parakeet import ParakeetModelManager, parakeet_model_registry
 from speaches.executors.piper import PiperModelManager, piper_model_registry
 from speaches.executors.pyannote import PyannoteModelManager, pyannote_model_registry
@@ -45,6 +46,12 @@ class ExecutorRegistry:
             model_registry=pyannote_model_registry,
             task="speaker-embedding",
         )
+        self._marian_executor = Executor(
+            name="marian",
+            model_manager=MarianModelManager(config.marian.model_ttl, config.marian),
+            model_registry=marian_model_registry,
+            task="translation",
+        )
 
     @property
     def transcription(self):  # noqa: ANN201
@@ -58,6 +65,10 @@ class ExecutorRegistry:
     def speaker_embedding(self):  # noqa: ANN201
         return (self._pyannote_executor,)
 
+    @property
+    def translation(self):  # noqa: ANN201
+        return (self._marian_executor,)
+
     def all_executors(self):  # noqa: ANN201
         return (
             self._whisper_executor,
@@ -65,4 +76,5 @@ class ExecutorRegistry:
             self._piper_executor,
             self._kokoro_executor,
             self._pyannote_executor,
+            self._marian_executor,
         )

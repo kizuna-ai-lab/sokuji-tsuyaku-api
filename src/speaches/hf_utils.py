@@ -27,7 +27,9 @@ class HfModelFilter(BaseModel):
     task: str | None = None
     tags: set[str] | None = None
 
-    def passes_filter(self, model_id: str, model_card_data: huggingface_hub.ModelCardData) -> bool:
+    def passes_filter(
+        self, model_id: str, model_card_data: huggingface_hub.ModelCardData, model_tags: list[str] | None = None
+    ) -> bool:
         if self.model_name is not None:
             if self.model_name.lower() not in model_id.lower():
                 # logger.debug(f"Model ID '{model_id}' does not match filter model name '{self.model_name}'")
@@ -36,20 +38,24 @@ class HfModelFilter(BaseModel):
 
         # convert None to an empty set so it's easier to work with
         model_card_data_tags = set(model_card_data.tags) if model_card_data.tags is not None else set()
+        # If model_tags is provided, combine it with card_data.tags for more comprehensive filtering
+        if model_tags is not None:
+            all_tags = model_card_data_tags | set(model_tags)
+        else:
+            all_tags = model_card_data_tags
+
         if self.library_name is not None:
             # Handle both 'library_name' (correct) and 'library' (legacy/incorrect) fields
             model_library = model_card_data.library_name or getattr(model_card_data, "library", None)
-            if model_library != self.library_name and self.library_name not in model_card_data_tags:
+            if model_library != self.library_name and self.library_name not in all_tags:
                 # logger.debug(
                 #     f"Model ID '{model_id}' does not match filter library '{self.library_name}': {model_card_data.to_dict()}"
                 # )
                 return False
-        if self.task is not None and (
-            self.task != model_card_data.pipeline_tag and self.task not in model_card_data_tags
-        ):
+        if self.task is not None and (self.task != model_card_data.pipeline_tag and self.task not in all_tags):
             # logger.debug(f"Model ID '{model_id}' does not match filter task '{self.task}': {model_card_data.to_dict()}")
             return False
-        if self.tags is not None and not self.tags.issubset(model_card_data_tags):  # noqa: SIM103
+        if self.tags is not None and not self.tags.issubset(all_tags):  # noqa: SIM103
             # logger.debug(f"Model ID '{model_id}' does not match filter tags '{self.tags}': {model_card_data.to_dict()}")
             return False
         return True
@@ -80,7 +86,7 @@ def get_cached_model_repos_info() -> list[huggingface_hub.CachedRepoInfo]:
 
 def get_model_card_data_from_cached_repo_info(
     cached_repo_info: huggingface_hub.CachedRepoInfo,
-) -> huggingface_hub.ModelCardData | None:
+) -> tuple[huggingface_hub.ModelCardData, list[str] | None] | None:
     revisions = list(cached_repo_info.revisions)
     revision = revisions[0] if len(revisions) == 1 else next(rev for rev in revisions if "main" in rev.refs)
     files = list(revision.files)
@@ -90,7 +96,15 @@ def get_model_card_data_from_cached_repo_info(
     readme_file_path = readme_cached_file_info.file_path
     model_card = huggingface_hub.ModelCard.load(readme_file_path, repo_type="model")
     assert isinstance(model_card.data, huggingface_hub.ModelCardData)
-    return model_card.data
+
+    model_tags: list[str] | None = None
+    try:
+        model_info = huggingface_hub.model_info(cached_repo_info.repo_id)
+        model_tags = model_info.tags
+    except Exception:
+        pass
+
+    return model_card.data, model_tags
 
 
 def load_repo_model_card_data(readme_file_path: str | Path) -> huggingface_hub.ModelCardData:

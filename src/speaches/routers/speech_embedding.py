@@ -32,8 +32,8 @@ def create_speech_embedding(
     audio: AudioFileDependency,
     model: Annotated[ModelId, Form()],
 ) -> CreateEmbeddingResponse:
-    model_card_data = get_model_card_data_or_raise(model)
-    executor = find_executor_for_model_or_raise(model, model_card_data, executor_registry.speaker_embedding)
+    model_card_data, model_tags = get_model_card_data_or_raise(model)
+    executor = find_executor_for_model_or_raise(model, model_card_data, executor_registry.speaker_embedding, model_tags)
 
     with executor.model_manager.load_model(model) as inference_session:
         audio_input = audio.astype(np.float32)

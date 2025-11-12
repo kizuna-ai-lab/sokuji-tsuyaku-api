@@ -43,8 +43,10 @@ class AudioStreamTrack(MediaStreamTrack):
         try:
             frame = await self.frame_queue.get()
             await asyncio.sleep(FRAME_DELAY)
-        except asyncio.CancelledError as e:
-            raise MediaStreamError("Track has ended") from e  # noqa: EM101
+        except asyncio.CancelledError:
+            # Don't chain the exception to avoid noisy stack traces in aiortc logs
+            self._running = False
+            raise MediaStreamError("Track has ended")  # noqa: EM101
         else:
             return frame
 
@@ -76,7 +78,7 @@ class AudioStreamTrack(MediaStreamTrack):
                     self.frame_queue.put_nowait(frame)
 
         except asyncio.CancelledError:
-            logger.warning("Audio frame generator task cancelled")
+            logger.info("Audio frame generator task cancelled - client disconnected")
 
     def _split_into_frames(self, audio_array: np.ndarray) -> list[np.ndarray]:
         # Ensure the array is 1D

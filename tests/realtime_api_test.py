@@ -10,7 +10,7 @@ from pytest_mock import MockerFixture
 from speaches.config import Config, WhisperConfig
 from speaches.main import create_app
 from speaches.realtime.session import create_session_object_configuration
-from speaches.realtime.utils import verify_websocket_api_key
+from speaches.realtime.utils import parse_model_parameter, verify_websocket_api_key
 
 
 class TestRealtimeWebSocketAuthentication:
@@ -130,68 +130,69 @@ class TestRealtimeWebSocketAuthentication:
 
 
 class TestRealtimeSessionConfiguration:
-    """Test session configuration for different modes."""
+    """Test session configuration with new model format: stt|tts|translation."""
 
-    def test_conversation_mode_default(self) -> None:
-        """Test default conversation mode session configuration."""
-        session = create_session_object_configuration("gpt-4o-realtime-preview")
+    def test_model_parameter_parsing(self) -> None:
+        """Test basic model parameter parsing."""
+        stt, tts, trans = parse_model_parameter(
+            "Systran/faster-distil-whisper-small.en|speaches-ai/Kokoro-82M-v1.0-ONNX|Helsinki-NLP/opus-mt-en-zh"
+        )
+        session = create_session_object_configuration(stt, tts, trans)
 
-        assert session.model == "gpt-4o-realtime-preview"
         assert session.input_audio_transcription.model == "Systran/faster-distil-whisper-small.en"
+        assert session.speech_model == "speaches-ai/Kokoro-82M-v1.0-ONNX"
+        assert session.translation_model == "Helsinki-NLP/opus-mt-en-zh"
         assert session.turn_detection is not None and session.turn_detection.create_response is True
         assert session.input_audio_transcription.language is None
 
-    def test_conversation_mode_with_custom_transcription(self) -> None:
-        """Test conversation mode with custom transcription model."""
-        session = create_session_object_configuration(
-            model="gpt-4o-realtime-preview", intent="conversation", transcription_model="whisper-1"
-        )
+    def test_model_with_language(self) -> None:
+        """Test model parameter with language specification."""
+        stt, tts, trans = parse_model_parameter("whisper-1|kokoro|marian")
+        session = create_session_object_configuration(stt, tts, trans, intent="conversation", language="ru")
 
-        assert session.model == "gpt-4o-realtime-preview"
         assert session.input_audio_transcription.model == "whisper-1"
-        assert session.turn_detection is not None and session.turn_detection.create_response is True
+        assert session.speech_model == "kokoro"
+        assert session.translation_model == "marian"
+        assert session.input_audio_transcription.language == "ru"
 
     def test_transcription_only_mode(self) -> None:
         """Test transcription-only mode configuration."""
-        session = create_session_object_configuration(
-            model="deepdml/faster-whisper-large-v3-turbo-ct2", intent="transcription"
-        )
+        stt, tts, trans = parse_model_parameter("deepdml/faster-whisper-large-v3-turbo-ct2|kokoro|marian")
+        session = create_session_object_configuration(stt, tts, trans, intent="transcription")
 
-        assert session.model == "gpt-4o-realtime-preview"  # Default conversation model (unused)
         assert session.input_audio_transcription.model == "deepdml/faster-whisper-large-v3-turbo-ct2"
         assert session.turn_detection is not None and session.turn_detection.create_response is False
 
-    def test_transcription_mode_with_language(self) -> None:
-        """Test transcription mode with language specification."""
-        session = create_session_object_configuration(model="whisper-1", intent="transcription", language="ru")
+    def test_invalid_model_format_too_few_parts(self) -> None:
+        """Test that invalid model format raises ValueError."""
+        import pytest
 
-        assert session.input_audio_transcription.language == "ru"
-        assert session.turn_detection is not None and session.turn_detection.create_response is False
+        with pytest.raises(ValueError, match="Invalid model format: expected 'stt\\|tts\\|translation'"):
+            parse_model_parameter("only-one-model")
 
-    def test_transcription_mode_with_explicit_models(self) -> None:
-        """Test transcription mode with explicit transcription model."""
-        session = create_session_object_configuration(
-            model="gpt-4o-realtime-preview", intent="transcription", transcription_model="custom-whisper-model"
-        )
+    def test_invalid_model_format_too_many_parts(self) -> None:
+        """Test that model with too many parts raises ValueError."""
+        import pytest
 
-        assert session.model == "gpt-4o-realtime-preview"
-        assert session.input_audio_transcription.model == "custom-whisper-model"
-        assert session.turn_detection is not None and session.turn_detection.create_response is False
+        with pytest.raises(ValueError, match="Invalid model format"):
+            parse_model_parameter("model1|model2|model3|model4")
+
+    def test_invalid_model_format_empty_part(self) -> None:
+        """Test that empty model parts raise ValueError."""
+        import pytest
+
+        with pytest.raises(ValueError, match="all three models must be non-empty"):
+            parse_model_parameter("whisper||marian")
 
     def test_session_configuration_logging(self, caplog) -> None:  # noqa: ANN001
         """Test that session configuration produces appropriate logging."""
         with caplog.at_level("INFO"):
-            create_session_object_configuration(model="test-model", intent="transcription")
+            create_session_object_configuration(stt_model="stt", tts_model="tts", translation_model="translation")
 
-        assert "Transcription-only mode" in caplog.text
-        assert "test-model" in caplog.text
-
-    def test_conversation_mode_logging(self, caplog) -> None:  # noqa: ANN001
-        """Test conversation mode logging."""
-        with caplog.at_level("INFO"):
-            create_session_object_configuration(model="gpt-4o-realtime-preview", intent="conversation")
-
-        assert "Conversation mode (OpenAI standard)" in caplog.text
+        assert "Using models:" in caplog.text
+        assert "STT=stt" in caplog.text
+        assert "TTS=tts" in caplog.text
+        assert "Translation=translation" in caplog.text
 
 
 class TestRealtimeWebSocketEndpoint:
@@ -220,80 +221,35 @@ class TestRealtimeWebSocketEndpoint:
         client = TestClient(app)
 
         # Test that the endpoint exists (will fail auth but endpoint should be found)
-        with client.websocket_connect("/v1/realtime?model=test-model") as _:
+        with client.websocket_connect("/v1/realtime?model=stt|tts|translation") as _:
             # Connection should be closed due to auth failure, but endpoint exists
             pass
 
-    @pytest.mark.asyncio
-    async def test_websocket_parameter_parsing(self) -> None:
-        """Test that WebSocket parameters are correctly parsed."""
-        # This would require more complex mocking of the WebSocket connection
-        # For now, we test the session configuration which is the core logic
-
-        # Test default parameters
-        session = create_session_object_configuration("test-model")
-        assert session.model == "test-model"
-
-        # Test with intent parameter
-        session = create_session_object_configuration("test-model", intent="transcription")
-        assert session.turn_detection is not None and session.turn_detection.create_response is False
-
-        # Test with all parameters
-        session = create_session_object_configuration(
-            model="test-model", intent="transcription", language="en", transcription_model="custom-model"
-        )
-        assert session.input_audio_transcription.model == "custom-model"
-        assert session.input_audio_transcription.language == "en"
-
 
 class TestRealtimeAPICompatibility:
-    """Test OpenAI Realtime API compatibility."""
+    """Test model format compatibility."""
 
-    def test_default_models_configuration(self) -> None:
-        """Test that default models are properly configured."""
-        session = create_session_object_configuration("gpt-4o-realtime-preview")
-
-        # Check default models match documentation
-        assert session.input_audio_transcription.model == "Systran/faster-distil-whisper-small.en"
-        assert session.speech_model == "speaches-ai/Kokoro-82M-v1.0-ONNX"
-        assert session.voice == "af_heart"
-
-    def test_openai_standard_behavior(self) -> None:
-        """Test OpenAI standard behavior is maintained."""
-        session = create_session_object_configuration(model="gpt-4o-realtime-preview", intent="conversation")
-
-        # OpenAI standard: model param is conversation model
-        assert session.model == "gpt-4o-realtime-preview"
-        # Default transcription model is used
-        assert session.input_audio_transcription.model == "Systran/faster-distil-whisper-small.en"
-        # Response generation is enabled
-        assert session.turn_detection is not None and session.turn_detection.create_response is True
-
-    def test_speaches_extension_behavior(self) -> None:
-        """Test Speaches extension behavior for transcription-only mode."""
-        session = create_session_object_configuration(model="custom-whisper-model", intent="transcription")
-
-        # Speaches extension: model param is transcription model
-        assert session.input_audio_transcription.model == "custom-whisper-model"
-        # Default conversation model is used (but unused)
-        assert session.model == "gpt-4o-realtime-preview"
-        # Response generation is disabled
-        assert session.turn_detection is not None and session.turn_detection.create_response is False
-
-    def test_session_structure_compatibility(self) -> None:
-        """Test that session structure matches expected OpenAI format."""
-        session = create_session_object_configuration("test-model")
+    def test_session_structure(self) -> None:
+        """Test that session structure is correct."""
+        session = create_session_object_configuration(
+            stt_model="stt-model", tts_model="tts-model", translation_model="translation-model"
+        )
 
         # Check required fields exist
         assert hasattr(session, "id")
-        assert hasattr(session, "model")
         assert hasattr(session, "modalities")
         assert hasattr(session, "input_audio_transcription")
         assert hasattr(session, "turn_detection")
         assert hasattr(session, "speech_model")
         assert hasattr(session, "voice")
+        assert hasattr(session, "translation_model")
 
         # Check types
         assert isinstance(session.modalities, list)
         assert "audio" in session.modalities
         assert "text" in session.modalities
+
+        # Check model values
+        assert session.input_audio_transcription.model == "stt-model"
+        assert session.speech_model == "tts-model"
+        assert session.translation_model == "translation-model"

@@ -7,19 +7,14 @@ from typing import TYPE_CHECKING
 
 import openai
 from openai.types.beta.realtime.error_event import Error
-from pydantic import BaseModel
 
-from speaches.realtime.chat_utils import (
-    create_completion_params,
-    items_to_chat_messages,
-)
+from speaches.realtime.chat_utils import items_to_chat_messages
 from speaches.realtime.event_router import EventRouter
 from speaches.realtime.session_event_router import unsupported_field_error, update_dict
 from speaches.realtime.utils import generate_response_id, task_done_callback
 from speaches.types.realtime import (
     ConversationItemContentAudio,
     ConversationItemContentText,
-    ConversationItemFunctionCall,
     ConversationItemMessage,
     ErrorEvent,
     RealtimeResponse,
@@ -35,8 +30,6 @@ from speaches.types.realtime import (
     ResponseCreatedEvent,
     ResponseCreateEvent,
     ResponseDoneEvent,
-    ResponseFunctionCallArgumentsDeltaEvent,
-    ResponseFunctionCallArgumentsDoneEvent,
     ResponseOutputItemAddedEvent,
     ResponseOutputItemDoneEvent,
     ResponseTextDeltaEvent,
@@ -46,10 +39,10 @@ from speaches.types.realtime import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Generator
+    from collections.abc import Generator
 
-    from openai.resources.chat import AsyncCompletions
-    from openai.types.chat import ChatCompletionChunk
+    from httpx import AsyncClient
+    from openai.resources.audio import AsyncSpeech
 
     from speaches.realtime.context import SessionContext
     from speaches.realtime.conversation_event_router import Conversation
@@ -66,26 +59,21 @@ conversation_already_has_active_response_error = Error(
 )
 
 
-class ChoiceDeltaAudio(BaseModel):
-    id: str | None = None
-    transcript: str | None = None
-    data: str | None = None
-    expires_at: int | None = None
-
-
 class ResponseHandler:
     def __init__(
         self,
         *,
-        completion_client: AsyncCompletions,
-        model: str,
+        translation_client: AsyncClient,
+        speech_client: AsyncSpeech,
+        translation_model: str,
         configuration: Response,
         conversation: Conversation,
         pubsub: EventPubSub,
     ) -> None:
         self.id = generate_response_id()
-        self.completion_client = completion_client
-        self.model = model  # NOTE: unfortunatly `Response` doesn't have a `model` field
+        self.translation_client = translation_client
+        self.speech_client = speech_client
+        self.translation_model = translation_model
         self.configuration = configuration
         self.conversation = conversation
         self.pubsub = pubsub
@@ -121,53 +109,42 @@ class ResponseHandler:
             ResponseContentPartDoneEvent(response_id=self.id, item_id=item.id, part=content.to_part())
         )
 
-    async def conversation_item_message_text_handler(self, chunk_stream: AsyncGenerator[ChatCompletionChunk]) -> None:
+    async def conversation_item_message_text_handler(self, translated_text: str) -> None:
         with self.add_output_item(ConversationItemMessage(role="assistant", status="incomplete", content=[])) as item:
             self.conversation.create_item(item)
 
             with self.add_item_content(item, ConversationItemContentText(text="")) as content:
-                async for chunk in chunk_stream:
-                    assert len(chunk.choices) == 1, chunk
-                    choice = chunk.choices[0]
-
-                    if choice.delta.content is not None:
-                        content.text += choice.delta.content
-                        self.pubsub.publish_nowait(
-                            ResponseTextDeltaEvent(item_id=item.id, response_id=self.id, delta=choice.delta.content)
-                        )
-
+                content.text = translated_text
+                self.pubsub.publish_nowait(
+                    ResponseTextDeltaEvent(item_id=item.id, response_id=self.id, delta=translated_text)
+                )
                 self.pubsub.publish_nowait(
                     ResponseTextDoneEvent(item_id=item.id, response_id=self.id, text=content.text)
                 )
 
-    async def conversation_item_message_audio_handler(self, chunk_stream: AsyncGenerator[ChatCompletionChunk]) -> None:
+    async def conversation_item_message_audio_handler(self, translated_text: str) -> None:
         with self.add_output_item(ConversationItemMessage(role="assistant", status="incomplete", content=[])) as item:
             self.conversation.create_item(item)
 
             with self.add_item_content(item, ConversationItemContentAudio(audio="", transcript="")) as content:
-                async for chunk in chunk_stream:
-                    assert len(chunk.choices) == 1, chunk
-                    choice = chunk.choices[0]
+                import base64
 
-                    audio = getattr(choice.delta, "audio", None)
-                    if audio is None:
-                        logger.warning(f"Could not extract audio from chunk: {chunk}")
-                        continue
-                    assert isinstance(audio, dict), chunk
-                    audio = ChoiceDeltaAudio(**audio)
-                    if audio.transcript is not None:
-                        self.pubsub.publish_nowait(
-                            ResponseAudioTranscriptDeltaEvent(
-                                item_id=item.id, response_id=self.id, delta=audio.transcript
-                            )
-                        )
-                        content.transcript += audio.transcript
+                response = await self.speech_client.create(
+                    model=self.configuration.speech_model,
+                    voice=self.configuration.voice,
+                    input=translated_text,
+                    response_format="pcm",
+                )
+                audio_bytes = await response.aread()
+                audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-                    if audio.data is not None:
-                        self.pubsub.publish_nowait(
-                            ResponseAudioDeltaEvent(item_id=item.id, response_id=self.id, delta=audio.data)
-                        )
-                        # NOTE: we explicitly don't append the audio data to the `audio` field
+                content.transcript = translated_text
+                self.pubsub.publish_nowait(
+                    ResponseAudioTranscriptDeltaEvent(item_id=item.id, response_id=self.id, delta=translated_text)
+                )
+                self.pubsub.publish_nowait(
+                    ResponseAudioDeltaEvent(item_id=item.id, response_id=self.id, delta=audio_base64)
+                )
 
                 self.pubsub.publish_nowait(ResponseAudioDoneEvent(item_id=item.id, response_id=self.id))
                 self.pubsub.publish_nowait(
@@ -176,79 +153,38 @@ class ResponseHandler:
                     )
                 )
 
-    async def conversation_item_function_call_handler(self, chunk_stream: AsyncGenerator[ChatCompletionChunk]) -> None:
-        chunk = await anext(chunk_stream)
-
-        assert len(chunk.choices) == 1, chunk
-        choice = chunk.choices[0]
-        assert choice.delta.tool_calls is not None and len(choice.delta.tool_calls) == 1, chunk
-        tool_call = choice.delta.tool_calls[0]
-        assert (
-            tool_call.id is not None
-            and tool_call.function is not None
-            and tool_call.function.name is not None
-            and tool_call.function.arguments is not None
-        ), chunk
-        item = ConversationItemFunctionCall(
-            status="incomplete",
-            call_id=tool_call.id,
-            name=tool_call.function.name,
-            arguments=tool_call.function.arguments,
-        )
-        assert item.call_id is not None and item.arguments is not None and item.name is not None, item
-
-        with self.add_output_item(item):
-            self.conversation.create_item(item)
-
-            async for chunk in chunk_stream:
-                assert len(chunk.choices) == 1, chunk
-                choice = chunk.choices[0]
-
-                if choice.delta.tool_calls is not None:
-                    assert len(choice.delta.tool_calls) == 1, chunk
-                    tool_call = choice.delta.tool_calls[0]
-                    assert tool_call.function is not None and tool_call.function.arguments is not None, chunk
-                    self.pubsub.publish_nowait(
-                        ResponseFunctionCallArgumentsDeltaEvent(
-                            item_id=item.id,
-                            response_id=self.id,
-                            call_id=item.call_id,
-                            delta=tool_call.function.arguments,
-                        )
-                    )
-                    item.arguments += tool_call.function.arguments
-
-            self.pubsub.publish_nowait(
-                ResponseFunctionCallArgumentsDoneEvent(
-                    arguments=item.arguments, call_id=item.call_id, item_id=item.id, response_id=self.id
-                )
-            )
-
     async def generate_response(self) -> None:
         try:
-            completion_params = create_completion_params(
-                self.model,
-                list(items_to_chat_messages(self.configuration.input)),
-                self.configuration,
+            messages = items_to_chat_messages(self.configuration.input)
+            if not messages:
+                logger.warning("No messages to translate")
+                return
+
+            last_message = messages[-1]
+            source_text = ""
+            if "content" in last_message:
+                source_text = last_message["content"]
+
+            if not source_text:
+                logger.warning("No source text found in last message")
+                return
+
+            response = await self.translation_client.post(
+                "/v1/translations",
+                data={
+                    "text": source_text,
+                    "model": self.translation_model,
+                },
             )
-            chunk_stream = await self.completion_client.create(**completion_params)
-            chunk = await anext(chunk_stream)
-            if chunk.choices[0].delta.tool_calls is not None:
-                handler = self.conversation_item_function_call_handler
-            elif self.configuration.modalities == ["text"]:
+            response.raise_for_status()
+            translated_text = response.json()["text"]
+
+            if self.configuration.modalities == ["text"]:
                 handler = self.conversation_item_message_text_handler
             else:
                 handler = self.conversation_item_message_audio_handler
 
-            async def merge_chunks_and_chunk_stream(
-                *chunks: ChatCompletionChunk, chunk_stream: openai.AsyncStream[ChatCompletionChunk]
-            ) -> AsyncGenerator[ChatCompletionChunk]:
-                for chunk in chunks:
-                    yield chunk
-                async for chunk in chunk_stream:
-                    yield chunk
-
-            await handler(merge_chunks_and_chunk_stream(chunk, chunk_stream=chunk_stream))
+            await handler(translated_text)
         except openai.APIError as e:
             logger.exception("Error while generating response")
             self.pubsub.publish_nowait(
@@ -295,8 +231,9 @@ async def handle_response_create_event(ctx: SessionContext, event: ResponseCreat
         configuration = Response(**updated_configuration)
 
     ctx.response = ResponseHandler(
-        completion_client=ctx.completion_client,
-        model=ctx.session.model,
+        translation_client=ctx.translation_client,
+        speech_client=ctx.speech_client,
+        translation_model=ctx.session.translation_model,
         configuration=configuration,
         conversation=ctx.conversation,
         pubsub=ctx.pubsub,

@@ -279,6 +279,7 @@ class Response(BaseModel):
     tool_choice: ToolChoice
     tools: list[Tool]
     voice: str
+    speech_model: str  # TTS model ID
 
 
 # TODO: which defaults should be set (if any)?
@@ -289,7 +290,6 @@ class Session(BaseModel):
     instructions: str
     max_response_output_tokens: int | Literal["inf"]
     modalities: list[Modality]
-    model: str
     output_audio_format: AudioFormat
     temperature: float  # TODO: should there be lower and upper bounds?
     tool_choice: ToolChoice
@@ -297,6 +297,7 @@ class Session(BaseModel):
     turn_detection: TurnDetection | None
     speech_model: str
     voice: str
+    translation_model: str
 
 
 class PartialSession(BaseModel):
@@ -305,7 +306,6 @@ class PartialSession(BaseModel):
     instructions: str | NotGiven = NOT_GIVEN
     max_response_output_tokens: int | Literal["inf"] | NotGiven = NOT_GIVEN
     modalities: list[Modality] | NotGiven = NOT_GIVEN
-    model: str | NotGiven = NOT_GIVEN
     output_audio_format: AudioFormat | NotGiven = NOT_GIVEN
     temperature: float | NotGiven = NOT_GIVEN
     tool_choice: ToolChoice | NotGiven = NOT_GIVEN
@@ -313,6 +313,8 @@ class PartialSession(BaseModel):
     turn_detection: TurnDetection | NotGiven = NOT_GIVEN
     speech_model: str | NotGiven = NOT_GIVEN
     voice: str | NotGiven = NOT_GIVEN
+    translation_model: str | NotGiven = NOT_GIVEN
+    model: str | NotGiven = NOT_GIVEN  # Compatibility field: format "stt|tts|translation"
 
 
 class SessionUpdateEvent(BaseModel):

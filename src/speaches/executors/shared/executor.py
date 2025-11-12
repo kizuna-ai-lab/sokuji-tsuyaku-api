@@ -13,5 +13,7 @@ class Executor[ManagerT, RegistryT: ModelRegistry](BaseModel):
 
     model_config = {"arbitrary_types_allowed": True}
 
-    def can_handle_model(self, model_id: str, model_card_data: ModelCardData) -> bool:
-        return self.model_registry.hf_model_filter.passes_filter(model_id, model_card_data)
+    def can_handle_model(
+        self, model_id: str, model_card_data: ModelCardData, model_tags: list[str] | None = None
+    ) -> bool:
+        return self.model_registry.hf_model_filter.passes_filter(model_id, model_card_data, model_tags)

@@ -22,13 +22,13 @@ from fastapi import (
     Response,
 )
 import numpy as np
-from openai import AsyncOpenAI
 from openai.types.beta.realtime.error_event import Error
 from pydantic import ValidationError
 
 from speaches.dependencies import (
-    ConfigDependency,
+    SpeechClientDependency,
     TranscriptionClientDependency,
+    TranslationClientDependency,
 )
 from speaches.realtime.context import SessionContext
 from speaches.realtime.conversation_event_router import event_router as conversation_event_router
@@ -40,7 +40,7 @@ from speaches.realtime.response_event_router import event_router as response_eve
 from speaches.realtime.rtc.audio_stream_track import AudioStreamTrack
 from speaches.realtime.session import create_session_object_configuration
 from speaches.realtime.session_event_router import event_router as session_event_router
-from speaches.realtime.utils import generate_event_id
+from speaches.realtime.utils import generate_event_id, parse_model_parameter
 from speaches.routers.realtime.ws import event_listener
 from speaches.types.realtime import (
     SERVER_EVENT_TYPES,
@@ -241,10 +241,11 @@ def datachannel_handler(ctx: SessionContext, channel: RTCDataChannel) -> None:
         logger.info(f"Data channel buffered amount low: {channel.id} (args={args}, kwargs={kwargs})")
 
 
-def iceconnectionstatechange_handler(_ctx: SessionContext, pc: RTCPeerConnection) -> None:
+def iceconnectionstatechange_handler(_ctx: SessionContext, pc: RTCPeerConnection, audio_track: AudioStreamTrack) -> None:
     logger.info(f"ICE connection state changed to {pc.iceConnectionState}")
     if pc.iceConnectionState in ["failed", "closed"]:
-        logger.info("Peer connection closed")
+        logger.info("Peer connection closed - stopping audio track")
+        audio_track.stop()
 
 
 def track_handler(ctx: SessionContext, track: RemoteStreamTrack) -> None:
@@ -259,18 +260,30 @@ def track_handler(ctx: SessionContext, track: RemoteStreamTrack) -> None:
 async def realtime_webrtc(
     request: Request,
     model: Annotated[str, Query(...)],
-    config: ConfigDependency,
     transcription_client: TranscriptionClientDependency,
+    translation_client: TranslationClientDependency,
+    speech_client: SpeechClientDependency,
+    intent: Annotated[str, Query()] = "conversation",
+    language: Annotated[str | None, Query()] = None,
 ) -> Response:
-    completion_client = AsyncOpenAI(
-        base_url=f"http://{config.host}:{config.port}/v1",
-        api_key=config.api_key.get_secret_value() if config.api_key else "cant-be-empty",
-        max_retries=0,
-    ).chat.completions
+    """WebRTC endpoint for OpenAI Realtime API.
+
+    Args:
+        model: Model string in format "stt_model|tts_model|translation_model"
+               Example: "Systran/faster-distil-whisper-small.en|speaches-ai/Kokoro-82M-v1.0-ONNX|Helsinki-NLP/opus-mt-en-zh"
+        intent: Session intent (deprecated, kept for compatibility)
+        language: Optional language code for transcription auto-detection
+
+    """
+    # Parse model parameter at API layer
+    stt_model, tts_model, translation_model = parse_model_parameter(model)
+    logger.info(f"WebRTC connection: STT={stt_model}, TTS={tts_model}, Translation={translation_model}")
+
     ctx = SessionContext(
         transcription_client=transcription_client,
-        completion_client=completion_client,
-        session=create_session_object_configuration(model, "conversation", None, None),
+        translation_client=translation_client,
+        speech_client=speech_client,
+        session=create_session_object_configuration(stt_model, tts_model, translation_model, intent, language),
     )
     rtc_session_tasks[ctx.session.id] = set()
 
@@ -286,8 +299,12 @@ async def realtime_webrtc(
     rtc_configuration = RTCConfiguration(iceServers=[])
     pc = RTCPeerConnection(rtc_configuration)
 
+    # Create audio track first so we can pass it to event handlers
+    audio_track = AudioStreamTrack(ctx)
+    pc.addTrack(audio_track)
+
     pc.on("datachannel", lambda channel: datachannel_handler(ctx, channel))
-    pc.on("iceconnectionstatechange", lambda: iceconnectionstatechange_handler(ctx, pc))
+    pc.on("iceconnectionstatechange", lambda: iceconnectionstatechange_handler(ctx, pc, audio_track))
     pc.on("track", lambda track: track_handler(ctx, track))
     pc.on(
         "icegatheringstatechange",
@@ -300,10 +317,6 @@ async def realtime_webrtc(
     )
 
     logger.info("Created peer connection")
-
-    # NOTE: is relay needed?
-    audio_track = AudioStreamTrack(ctx)
-    pc.addTrack(audio_track)
 
     # Set the remote description and create an answer
     await pc.setRemoteDescription(offer)

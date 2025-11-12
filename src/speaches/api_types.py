@@ -128,7 +128,7 @@ class CreateTranscriptionResponseVerboseJson(BaseModel):
         )
 
 
-ModelTask = Literal["automatic-speech-recognition", "text-to-speech", "speaker-embedding"]
+ModelTask = Literal["automatic-speech-recognition", "text-to-speech", "speaker-embedding", "translation"]
 
 
 # https://github.com/openai/openai-openapi/blob/master/openapi.yaml#L11146

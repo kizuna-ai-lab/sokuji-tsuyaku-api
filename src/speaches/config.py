@@ -32,6 +32,15 @@ class WhisperConfig(BaseModel):
     """
 
 
+class MarianConfig(BaseModel):
+    """Configuration for MarianMT translation models."""
+
+    inference_device: Device = "auto"
+    device_index: int | list[int] = 0
+    compute_type: Quantization = "int8"
+    model_ttl: int = 300
+
+
 class OrtOptions(BaseModel):
     exclude_providers: list[str] = ["TensorrtExecutionProvider"]
     """
@@ -116,8 +125,7 @@ class Config(BaseSettings):
     If not set the gradio app will use the url that the user connects to the gradio app on.
     """
 
-    # TODO: document the below configuration options
-    chat_completion_base_url: str = "http://localhost:11434/v1"
-    chat_completion_api_key: SecretStr = SecretStr("cant-be-empty")
+    marian: MarianConfig = MarianConfig()
+    """Configuration for MarianMT translation models."""
 
     unstable_ort_opts: OrtOptions = OrtOptions()

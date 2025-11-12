@@ -50,6 +50,36 @@ def task_done_callback(task: asyncio.Task, *, context: Context | None = None) ->
         logger.exception(f"Task {task.get_name()} failed")
 
 
+def parse_model_parameter(model: str) -> tuple[str, str, str]:
+    """Parse model parameter in format: stt_model|tts_model|translation_model.
+
+    Args:
+        model: Model string in format "stt|tts|translation"
+
+    Returns:
+        Tuple of (stt_model, tts_model, translation_model)
+
+    Raises:
+        ValueError: If model format is invalid (not exactly 3 parts)
+
+    Examples:
+        >>> parse_model_parameter("whisper|kokoro|marian")
+        ("whisper", "kokoro", "marian")
+
+    """
+    parts = model.split("|")
+
+    if len(parts) != 3:
+        raise ValueError(f"Invalid model format: expected 'stt|tts|translation', got '{model}' with {len(parts)} parts")
+
+    stt_model, tts_model, translation_model = parts
+
+    if not stt_model or not tts_model or not translation_model:
+        raise ValueError(f"Invalid model format: all three models must be non-empty in '{model}'")
+
+    return (stt_model, tts_model, translation_model)
+
+
 async def verify_websocket_api_key(
     websocket: WebSocket,
     config: "Config",

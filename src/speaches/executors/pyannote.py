@@ -72,7 +72,10 @@ class PyannoteModelRegistry(ModelRegistry):
         for cached_repo_info in cached_model_repos_info:
             if cached_repo_info.repo_id in MODEL_ID_BLACKLIST:
                 continue
-            model_card_data = get_model_card_data_from_cached_repo_info(cached_repo_info)
+            result = get_model_card_data_from_cached_repo_info(cached_repo_info)
+            if result is None:
+                continue
+            model_card_data, _ = result
             if model_card_data is None:
                 continue
             if self.hf_model_filter.passes_filter(cached_repo_info.repo_id, model_card_data):

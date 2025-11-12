@@ -56,10 +56,10 @@ def load_model_route(executor_registry: ExecutorRegistryDependency, model_id: Mo
                 },
             )
 
-    model_card_data = get_model_card_data_or_raise(model_id)
+    model_card_data, model_tags = get_model_card_data_or_raise(model_id)
 
     for executor in executor_registry.all_executors():
-        if executor.can_handle_model(model_id, model_card_data):
+        if executor.can_handle_model(model_id, model_card_data, model_tags):
             with executor.model_manager.load_model(model_id):
                 pass
             return JSONResponse(status_code=201, content={"message": f"Model '{model_id}' loaded."})

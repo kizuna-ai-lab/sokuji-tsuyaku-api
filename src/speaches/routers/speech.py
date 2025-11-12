@@ -56,12 +56,14 @@ async def synthesize(  # noqa: C901
     executor_registry: ExecutorRegistryDependency,
     body: CreateSpeechRequestBody,
 ) -> Response | StreamingResponse:
-    model_card_data = get_model_card_data_or_raise(body.model)
+    model_card_data, model_tags = get_model_card_data_or_raise(body.model)
 
     body.input = strip_emojis(body.input)
     body.input = strip_markdown_emphasis(body.input)
 
-    executor = find_executor_for_model_or_raise(body.model, model_card_data, executor_registry.text_to_speech)
+    executor = find_executor_for_model_or_raise(
+        body.model, model_card_data, executor_registry.text_to_speech, model_tags
+    )
 
     if isinstance(executor.model_manager, KokoroModelManager):
         if body.speed < 0.5 or body.speed > 2.0:

@@ -177,3 +177,11 @@ Thumbs.db
 .DS_Store
 
 misc/onnx-export/models/*onnx
+/.idea/inspectionProfiles/profiles_settings.xml
+/.idea/inspectionProfiles/Project_Default.xml
+/.idea/.gitignore
+/.idea/misc.xml
+/.idea/speaches.iml
+/.idea/vcs.xml
+
+examples/javascript/node_modules/

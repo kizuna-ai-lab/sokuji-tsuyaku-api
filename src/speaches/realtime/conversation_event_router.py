@@ -119,8 +119,9 @@ async def handle_conversation_item_input_audio_transcription_completed_event(
         ctx.response.stop()
 
     ctx.response = ResponseHandler(
-        completion_client=ctx.completion_client,
-        model=ctx.session.model,
+        translation_client=ctx.translation_client,
+        speech_client=ctx.speech_client,
+        translation_model=ctx.session.translation_model,
         configuration=Response(
             conversation="auto", input=list(ctx.conversation.items.values()), **ctx.session.model_dump()
         ),

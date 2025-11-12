@@ -7,11 +7,12 @@ from fastapi import (
     WebSocketException,
     status,
 )
-from openai import AsyncOpenAI
 
 from speaches.dependencies import (
     ConfigDependency,
+    SpeechClientDependency,
     TranscriptionClientDependency,
+    TranslationClientDependency,
 )
 from speaches.realtime.context import SessionContext
 from speaches.realtime.conversation_event_router import event_router as conversation_event_router
@@ -23,7 +24,7 @@ from speaches.realtime.message_manager import WsServerMessageManager
 from speaches.realtime.response_event_router import event_router as response_event_router
 from speaches.realtime.session import OPENAI_REALTIME_SESSION_DURATION_SECONDS, create_session_object_configuration
 from speaches.realtime.session_event_router import event_router as session_event_router
-from speaches.realtime.utils import task_done_callback, verify_websocket_api_key
+from speaches.realtime.utils import parse_model_parameter, task_done_callback, verify_websocket_api_key
 from speaches.types.realtime import SessionCreatedEvent
 
 logger = logging.getLogger(__name__)
@@ -58,16 +59,18 @@ async def realtime(
     model: str,
     config: ConfigDependency,
     transcription_client: TranscriptionClientDependency,
+    translation_client: TranslationClientDependency,
+    speech_client: SpeechClientDependency,
     intent: str = "conversation",
     language: str | None = None,
-    transcription_model: str | None = None,
 ) -> None:
     """OpenAI Realtime API compatible WebSocket endpoint.
 
-    According to OpenAI Realtime API specification:
-    - 'model' parameter is the conversation model (e.g., gpt-4o-realtime-preview)
-    - 'transcription_model' parameter is for input_audio_transcription.model
-    - 'intent' parameter controls session behavior (conversation vs transcription)
+    Args:
+        model: Model string in format "stt_model|tts_model|translation_model"
+               Example: "Systran/faster-distil-whisper-small.en|speaches-ai/Kokoro-82M-v1.0-ONNX|Helsinki-NLP/opus-mt-en-zh"
+        intent: Session intent (deprecated, kept for compatibility)
+        language: Optional language code for transcription auto-detection
 
     References:
     - https://platform.openai.com/docs/guides/realtime/overview
@@ -82,17 +85,16 @@ async def realtime(
         return
 
     await ws.accept()
-    logger.info(f"Accepted websocket connection with intent: {intent}")
 
-    completion_client = AsyncOpenAI(
-        base_url=f"http://{config.host}:{config.port}/v1",
-        api_key=config.api_key.get_secret_value() if config.api_key else "cant-be-empty",
-        max_retries=0,
-    ).chat.completions
+    # Parse model parameter at API layer
+    stt_model, tts_model, translation_model = parse_model_parameter(model)
+    logger.info(f"Accepted websocket connection: STT={stt_model}, TTS={tts_model}, Translation={translation_model}")
+
     ctx = SessionContext(
         transcription_client=transcription_client,
-        completion_client=completion_client,
-        session=create_session_object_configuration(model, intent, language, transcription_model),
+        translation_client=translation_client,
+        speech_client=speech_client,
+        session=create_session_object_configuration(stt_model, tts_model, translation_model, intent, language),
     )
     message_manager = WsServerMessageManager(ctx.pubsub)
     async with asyncio.TaskGroup() as tg:

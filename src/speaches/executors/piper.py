@@ -126,7 +126,10 @@ class PiperModelRegistry(ModelRegistry):
     def list_local_models(self) -> Generator[PiperModel, None, None]:
         cached_model_repos_info = get_cached_model_repos_info()
         for cached_repo_info in cached_model_repos_info:
-            model_card_data = get_model_card_data_from_cached_repo_info(cached_repo_info)
+            result = get_model_card_data_from_cached_repo_info(cached_repo_info)
+            if result is None:
+                continue
+            model_card_data, _ = result
             if model_card_data is None:
                 continue
             if self.hf_model_filter.passes_filter(cached_repo_info.repo_id, model_card_data):
@@ -179,11 +182,19 @@ def generate_audio(
     if sample_rate is None:
         sample_rate = piper_tts.config.sample_rate
     start = time.perf_counter()
+    total_bytes = 0
+    chunk_count = 0
     for audio_bytes in piper_tts.synthesize_stream_raw(text, length_scale=1.0 / speed):
         if sample_rate != piper_tts.config.sample_rate:
             audio_bytes = resample_audio(audio_bytes, piper_tts.config.sample_rate, sample_rate)  # noqa: PLW2901
+        total_bytes += len(audio_bytes)
+        chunk_count += 1
         yield audio_bytes
-    logger.info(f"Generated audio for {len(text)} characters in {time.perf_counter() - start}s")
+    duration_sec = total_bytes / (sample_rate * 2)  # 2 bytes per sample (int16)
+    logger.info(
+        f"Generated audio for {len(text)} characters in {time.perf_counter() - start:.3f}s: "
+        f"{total_bytes} bytes, {chunk_count} chunks, ~{duration_sec:.2f}s duration"
+    )
 
 
 class PiperModelManager(BaseModelManager["PiperVoice"]):

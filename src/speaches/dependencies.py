@@ -18,7 +18,6 @@ from numpy import float32
 from numpy.typing import NDArray
 from openai import AsyncOpenAI
 from openai.resources.audio import AsyncSpeech, AsyncTranscriptions
-from openai.resources.chat.completions import AsyncCompletions
 
 from speaches.config import Config
 from speaches.executors.shared.registry import ExecutorRegistry
@@ -105,24 +104,6 @@ AudioFileDependency = Annotated[NDArray[float32], Depends(audio_file_dependency)
 
 
 @lru_cache
-def get_completion_client() -> AsyncCompletions:
-    config = get_config()
-    oai_client = AsyncOpenAI(
-        base_url=config.chat_completion_base_url,
-        api_key=config.chat_completion_api_key.get_secret_value(),
-        max_retries=0,
-    )
-    return oai_client.chat.completions
-
-
-async def get_completion_client_async() -> AsyncCompletions:
-    return get_completion_client()
-
-
-CompletionClientDependency = Annotated[AsyncCompletions, Depends(get_completion_client_async)]
-
-
-@lru_cache
 def get_speech_client() -> AsyncSpeech:
     config = get_config()
     if config.loopback_host_url is None:
@@ -186,3 +167,27 @@ async def get_transcription_client_async() -> AsyncTranscriptions:
 
 
 TranscriptionClientDependency = Annotated[AsyncTranscriptions, Depends(get_transcription_client_async)]
+
+
+@lru_cache
+def get_translation_client() -> AsyncClient:
+    config = get_config()
+    if config.loopback_host_url is None:
+        from speaches.routers.translations import router as translations_router
+
+        http_client = AsyncClient(
+            transport=ASGITransport(translations_router),
+            base_url="http://test",
+        )
+    else:
+        http_client = AsyncClient(
+            base_url=f"{config.loopback_host_url}",
+        )
+    return http_client
+
+
+async def get_translation_client_async() -> AsyncClient:
+    return get_translation_client()
+
+
+TranslationClientDependency = Annotated[AsyncClient, Depends(get_translation_client_async)]
