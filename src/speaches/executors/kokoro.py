@@ -1,21 +1,22 @@
-from __future__ import annotations
-
-from collections.abc import AsyncGenerator
+from collections.abc import Generator
 import logging
 from pathlib import Path
 import time
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import huggingface_hub
 from kokoro_onnx import Kokoro
-import numpy as np
 from onnxruntime import InferenceSession
 from pydantic import BaseModel, computed_field
 
-from speaches.api_types import Model
-from speaches.audio import Audio, resample_audio
+from speaches.api_types import (
+    OPENAI_SUPPORTED_SPEECH_VOICE_NAMES,
+    Model,
+)
+from speaches.audio import Audio
 from speaches.config import OrtOptions
 from speaches.executors.shared.base_model_manager import BaseModelManager, get_ort_providers_with_options
+from speaches.executors.shared.handler_protocol import SpeechRequest, SpeechResponse
 from speaches.hf_utils import (
     HfModelFilter,
     extract_language_list,
@@ -28,18 +29,10 @@ from speaches.model_registry import (
 )
 from speaches.utils import async_to_sync_generator
 
-if TYPE_CHECKING:
-    from collections.abc import Generator
-
-    from speaches.executors.shared.handler_protocol import SpeechRequest, SpeechResponse
-
 SAMPLE_RATE = 24000  # the default sample rate for Kokoro
 LIBRARY_NAME = "onnx"
 TASK_NAME_TAG = "text-to-speech"
 TAGS = {"speaches", "kokoro"}
-
-# OpenAI voice names for compatibility
-OPENAI_SUPPORTED_SPEECH_VOICE_NAMES = ("alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse")
 
 
 class KokoroModelFiles(BaseModel):
@@ -141,7 +134,7 @@ logger = logging.getLogger(__name__)
 
 
 class KokoroModelRegistry(ModelRegistry):
-    def list_remote_models(self) -> Generator[KokoroModel, None, None]:
+    def list_remote_models(self) -> Generator[KokoroModel]:
         models = huggingface_hub.list_models(**self.hf_model_filter.list_model_kwargs(), cardData=True)
         for model in models:
             assert model.created_at is not None and model.card_data is not None, model
@@ -155,16 +148,16 @@ class KokoroModelRegistry(ModelRegistry):
                 voices=VOICES,
             )
 
-    def list_local_models(self) -> Generator[KokoroModel, None, None]:
+    def list_local_models(self) -> Generator[KokoroModel]:
         cached_model_repos_info = get_cached_model_repos_info()
         for cached_repo_info in cached_model_repos_info:
             result = get_model_card_data_from_cached_repo_info(cached_repo_info)
             if result is None:
                 continue
-            model_card_data, _ = result
+            model_card_data, model_tags = result
             if model_card_data is None:
                 continue
-            if self.hf_model_filter.passes_filter(cached_repo_info.repo_id, model_card_data):
+            if self.hf_model_filter.passes_filter(cached_repo_info.repo_id, model_card_data, model_tags):
                 yield KokoroModel(
                     id=cached_repo_info.repo_id,
                     created=int(cached_repo_info.last_modified),
@@ -206,49 +199,36 @@ class KokoroModelManager(BaseModelManager[Kokoro]):
         inf_sess = InferenceSession(model_files.model, providers=providers)
         return Kokoro.from_session(inf_sess, str(model_files.voices))
 
-    def handle_speech_request(self, request: SpeechRequest, **_kwargs) -> SpeechResponse:
-        if not 0.5 <= request.speed <= 2.0:
+    def handle_speech_request(
+        self,
+        request: SpeechRequest,
+        **_kwargs,
+    ) -> SpeechResponse:
+        if request.speed < 0.5 or request.speed > 2.0:
             msg = f"Speed must be between 0.5 and 2.0, got {request.speed}"
             raise ValueError(msg)
+        if request.voice not in [v.name for v in VOICES]:
+            if request.voice in OPENAI_SUPPORTED_SPEECH_VOICE_NAMES:
+                logger.warning(
+                    f"Voice '{request.voice}' is not supported by the model '{request.model}'. It will be replaced with '{VOICES[0].name}'. The behaviour of substituting OpenAI voices may be removed in the future without warning."
+                )
+                request.voice = VOICES[0].name
+            else:
+                msg = f"Voice '{request.voice}' is not supported. Supported voices: {VOICES}"
+                raise ValueError(msg)
 
-        voice = request.voice
-        if voice in OPENAI_SUPPORTED_SPEECH_VOICE_NAMES:
-            logger.warning(
-                f"OpenAI voice '{voice}' is deprecated. Please use Kokoro voice names directly. "
-                f"Auto-replacing with default voice."
-            )
-            voice = "af_heart"
-
-        voice_language = next(v.language for v in VOICES if v.name == voice)
-
-        start = time.perf_counter()
+        voice_language = next(v.language for v in VOICES if v.name == request.voice)
         with self.load_model(request.model) as tts:
-            async_stream = tts.create_stream(request.text, voice, lang=voice_language, speed=request.speed)
+            start = time.perf_counter()
+            async_stream = tts.create_stream(
+                request.text,
+                request.voice,
+                lang=voice_language,
+                speed=request.speed,
+            )
+            # HACK: converting an async generator to a sync generator
             sync_stream = async_to_sync_generator(async_stream)
-
             for audio_data, _ in sync_stream:
                 yield Audio(audio_data, sample_rate=SAMPLE_RATE)
 
-        logger.info(f"Generated audio for {len(request.text)} characters in {time.perf_counter() - start:.3f}s")
-
-
-async def generate_audio(
-    kokoro_tts: Kokoro,
-    text: str,
-    voice: str,
-    *,
-    speed: float = 1.0,
-    sample_rate: int | None = None,
-) -> AsyncGenerator[bytes, None]:
-    if sample_rate is None:
-        sample_rate = SAMPLE_RATE
-    voice_language = next(v.language for v in VOICES if v.name == voice)
-    start = time.perf_counter()
-    async for audio_data, _ in kokoro_tts.create_stream(text, voice, lang=voice_language, speed=speed):
-        assert isinstance(audio_data, np.ndarray) and audio_data.dtype == np.float32 and isinstance(sample_rate, int)
-        normalized_audio_data = (audio_data * np.iinfo(np.int16).max).astype(np.int16)
-        audio_bytes = normalized_audio_data.tobytes()
-        if sample_rate != SAMPLE_RATE:
-            audio_bytes = resample_audio(audio_bytes, SAMPLE_RATE, sample_rate)
-        yield audio_bytes
-    logger.info(f"Generated audio for {len(text)} characters in {time.perf_counter() - start}s")
+        logger.info(f"Generated audio for {len(request.text)} characters in {time.perf_counter() - start}s")

@@ -1,13 +1,7 @@
-from __future__ import annotations
-
 import asyncio
+from collections.abc import AsyncGenerator
 import re
-from typing import TYPE_CHECKING, Protocol
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Iterable
-
-    from speaches.api_types import TranscriptionSegment
+from typing import Protocol
 
 
 class TextChunker(Protocol):
@@ -23,17 +17,13 @@ class TextChunker(Protocol):
 
     async def __aiter__(self) -> AsyncGenerator[str]:
         """Iterate through chunks of text.
+
         Different implementations may chunk text differently.
-        """  # noqa: D205
+        """
         yield ""
 
 
-def segments_to_text(segments: Iterable[TranscriptionSegment]) -> str:
-    return "".join(segment.text for segment in segments).strip()
-
-
 def format_as_sse(data: str) -> str:
-    """Format data as Server-Sent Events."""
     return f"data: {data}\n\n"
 
 
@@ -53,9 +43,9 @@ def vtt_format_timestamp(ts: float) -> str:
     return f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}.{int(milliseconds):03d}"
 
 
-def segments_to_vtt(segment: TranscriptionSegment, i: int) -> str:
-    start = segment.start if i > 0 else 0.0
-    result = f"{vtt_format_timestamp(start)} --> {vtt_format_timestamp(segment.end)}\n{segment.text}\n\n"
+def format_as_vtt(text: str, start: float, end: float, i: int) -> str:
+    start = start if i > 0 else 0.0
+    result = f"{vtt_format_timestamp(start)} --> {vtt_format_timestamp(end)}\n{text}\n\n"
 
     if i == 0:
         return f"WEBVTT\n\n{result}"
@@ -63,8 +53,8 @@ def segments_to_vtt(segment: TranscriptionSegment, i: int) -> str:
         return result
 
 
-def segments_to_srt(segment: TranscriptionSegment, i: int) -> str:
-    return f"{i + 1}\n{srt_format_timestamp(segment.start)} --> {srt_format_timestamp(segment.end)}\n{segment.text}\n\n"
+def format_as_srt(text: str, start: float, end: float, i: int) -> str:
+    return f"{i + 1}\n{srt_format_timestamp(start)} --> {srt_format_timestamp(end)}\n{text}\n\n"
 
 
 MIN_SENTENCE_LENGTH = 20
@@ -92,7 +82,8 @@ class SentenceChunker:
     def add_token(self, token: str) -> None:
         """Add a token (text chunk) to the chunker."""
         if self._is_closed:
-            raise RuntimeError("Cannot add tokens to a closed SentenceChunker")  # noqa: EM101
+            msg = "Cannot add tokens to a closed SentenceChunker"
+            raise RuntimeError(msg)
 
         self._content += token
         self._new_token_event.set()
@@ -147,7 +138,6 @@ class SentenceChunker:
 
 def strip_emojis(text: str) -> str:
     # Get all emoji unicode characters
-    # NOTE: Removed the range \U000024c2-\U0001f251 because it incorrectly included CJK characters (U+4E00-U+9FFF)
     emoji_pattern = re.compile(
         "["
         "\U0001f600-\U0001f64f"  # emoticons
@@ -160,6 +150,7 @@ def strip_emojis(text: str) -> str:
         "\U0001fa00-\U0001fa6f"  # Chess Symbols
         "\U0001fa70-\U0001faff"  # Symbols and Pictographs Extended-A
         "\U00002702-\U000027b0"  # Dingbats
+        "\U000024c2-\U0001f251"
         "]+",
         flags=re.UNICODE,
     )
@@ -203,7 +194,8 @@ class EOFTextChunker:
     def add_token(self, token: str) -> None:
         """Add a token (text chunk) to the chunker."""
         if self._is_closed:
-            raise RuntimeError("Cannot add tokens to a closed EOFTextChunker")  # noqa: EM101
+            msg = "Cannot add tokens to a closed EOFTextChunker"
+            raise RuntimeError(msg)
 
         self._content += token
         self._new_token_event.set()

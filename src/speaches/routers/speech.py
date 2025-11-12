@@ -1,40 +1,53 @@
+from collections.abc import Generator
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from speaches.audio import convert_audio_format
+from speaches.api_types import (
+    DEFAULT_SPEECH_RESPONSE_FORMAT,
+    MAX_SPEECH_SAMPLE_RATE,
+    MIN_SPEECH_SAMPLE_RATE,
+    SpeechAudioDeltaEvent,
+    SpeechAudioDoneEvent,
+    SpeechAudioTokenUsage,
+    SpeechResponseFormat,
+)
+from speaches.audio import Audio, stream_audio_as_formatted_bytes
 from speaches.dependencies import ExecutorRegistryDependency
-from speaches.executors import kokoro
-from speaches.executors.kokoro import KokoroModelManager
-from speaches.executors.piper import PiperModelManager
 from speaches.executors.shared.handler_protocol import SpeechRequest
 from speaches.model_aliases import ModelId
 from speaches.routers.utils import find_executor_for_model_or_raise, get_model_card_data_or_raise
-from speaches.text_utils import strip_emojis, strip_markdown_emphasis
-
-# https://platform.openai.com/docs/api-reference/audio/createSpeech#audio-createspeech-response_format
-DEFAULT_RESPONSE_FORMAT = "mp3"
-
-# https://platform.openai.com/docs/api-reference/audio/createSpeech#audio-createspeech-voice
-# https://platform.openai.com/docs/guides/text-to-speech/voice-options
-OPENAI_SUPPORTED_SPEECH_VOICE_NAMES = ("alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse")
-
-# https://platform.openai.com/docs/guides/text-to-speech/supported-output-formats
-type ResponseFormat = Literal["mp3", "flac", "wav", "pcm"]
-SUPPORTED_RESPONSE_FORMATS = ("mp3", "flac", "wav", "pcm")
-SUPPORTED_NON_STREAMABLE_RESPONSE_FORMATS = ("flac", "wav")
-UNSUPORTED_RESPONSE_FORMATS = ("opus", "aac")
-
-MIN_SAMPLE_RATE = 8000
-MAX_SAMPLE_RATE = 48000
-
+from speaches.text_utils import format_as_sse, strip_emojis, strip_markdown_emphasis
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["speech-to-text"])
+
+RESPONSE_FORMAT_MIME_TYPE_MAP = {
+    "pcm": "audio/pcm",
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "flac": "audio/flac",
+    "opus": "audio/opus",
+    "aac": "audio/aac",
+}
+
+
+def response_format_to_mime_type(response_format: SpeechResponseFormat) -> str:
+    mime_type = RESPONSE_FORMAT_MIME_TYPE_MAP[response_format]
+    # Adding additional information to help client in decoding
+    # Per https://voysis.readme.io/docs/audio-guidelines
+    # NOTE: I'm not sure how widely supported these additional parameters are so for now they are commented out
+    # if response_format == "pcm":
+    #     mime_type += f";rate={audio.sample_rate}"
+    #     mime_type += ";bits=16"
+    #     mime_type += ";encoding=signed-int"
+    #     mime_type += ";channels=1"
+    #     mime_type += ";big-endian=false"
+    return mime_type
 
 
 class CreateSpeechRequestBody(BaseModel):
@@ -42,98 +55,72 @@ class CreateSpeechRequestBody(BaseModel):
     input: str
     """The text to generate audio for."""
     voice: str
-    response_format: ResponseFormat = DEFAULT_RESPONSE_FORMAT
+    response_format: SpeechResponseFormat = DEFAULT_SPEECH_RESPONSE_FORMAT
     # https://platform.openai.com/docs/api-reference/audio/createSpeech#audio-createspeech-voice
     speed: float = 1.0
     """The speed of the generated audio. 1.0 is the default. Different models have different supported speed ranges."""
-    sample_rate: int | None = Field(None, ge=MIN_SAMPLE_RATE, le=MAX_SAMPLE_RATE)
+    stream_format: Literal["audio", "sse"] = "audio"
+    """The format to stream the audio in. Supported formats are sse and audio"""
+    sample_rate: int | None = Field(None, ge=MIN_SPEECH_SAMPLE_RATE, le=MAX_SPEECH_SAMPLE_RATE)
     """Desired sample rate to convert the generated audio to. If not provided, the model's default sample rate will be used."""
 
 
+def audio_gen_to_speech_audio_events(
+    audio_generator: Generator[Audio],
+) -> Generator[SpeechAudioDeltaEvent | SpeechAudioDoneEvent]:
+    for audio in audio_generator:
+        yield SpeechAudioDeltaEvent(audio=audio.to_base64())
+    # HACK: token usage is not tracked in any way yet
+    yield SpeechAudioDoneEvent(token_usage=SpeechAudioTokenUsage(input_tokens=0, output_tokens=0, total_tokens=0))
+
+
+def speech_audio_events_to_sse(
+    speech_audio_events: Generator[SpeechAudioDeltaEvent | SpeechAudioDoneEvent],
+) -> Generator[str]:
+    for event in speech_audio_events:
+        yield format_as_sse(event.model_dump_json())
+
+
 # https://platform.openai.com/docs/api-reference/audio/createSpeech
-# NOTE: `response_model=None` because `Response | StreamingResponse` are not serializable by Pydantic.
-@router.post("/v1/audio/speech", response_model=None)
-async def synthesize(  # noqa: C901
+@router.post("/v1/audio/speech")
+def synthesize(
     executor_registry: ExecutorRegistryDependency,
     body: CreateSpeechRequestBody,
-) -> Response | StreamingResponse:
+) -> StreamingResponse:
     model_card_data, model_tags = get_model_card_data_or_raise(body.model)
-
-    body.input = strip_emojis(body.input)
-    body.input = strip_markdown_emphasis(body.input)
-
     executor = find_executor_for_model_or_raise(
         body.model, model_card_data, executor_registry.text_to_speech, model_tags
     )
 
-    try:
-        if isinstance(executor.model_manager, (KokoroModelManager, PiperModelManager)):
-            # Validate voice for Kokoro
-            if isinstance(executor.model_manager, KokoroModelManager):
-                if body.voice not in [v.name for v in kokoro.VOICES]:
-                    if body.voice in OPENAI_SUPPORTED_SPEECH_VOICE_NAMES:
-                        logger.warning(
-                            f"Voice '{body.voice}' is not supported by the model '{body.model}'. It will be replaced with '{kokoro.VOICES[0].name}'. The behaviour of substituting OpenAI voices may be removed in the future without warning."
-                        )
-                        body.voice = kokoro.VOICES[0].name
-                    else:
-                        raise HTTPException(
-                            status_code=422,
-                            detail=f"Voice '{body.voice}' is not supported. Supported voices: {kokoro.VOICES}",
-                        )
+    body.input = strip_emojis(body.input)
+    body.input = strip_markdown_emphasis(body.input)
 
-            # Create speech request
-            request = SpeechRequest(
-                model=body.model,
-                voice=body.voice,
-                text=body.input,
-                speed=body.speed,
+    speech_request = SpeechRequest(
+        model=body.model,
+        voice=body.voice,
+        text=body.input,
+        speed=body.speed,
+    )
+    try:
+        audio_generator = executor.model_manager.handle_speech_request(
+            speech_request,
+        )
+        if body.stream_format == "sse":
+            return StreamingResponse(
+                speech_audio_events_to_sse(audio_gen_to_speech_audio_events(audio_generator)),
+                media_type="text/event-stream",
             )
 
-            # Get Audio generator from handler
-            audio_generator = executor.model_manager.handle_speech_request(request)
-
-            # Convert Audio objects to bytes, applying sample rate conversion if needed
-            target_sample_rate = body.sample_rate
-
-            def audio_to_bytes_generator():  # type: ignore[no-untyped-def]  # noqa: ANN202
-                for audio_obj in audio_generator:
-                    if target_sample_rate and audio_obj.sample_rate != target_sample_rate:
-                        audio_obj = audio_obj.resample(target_sample_rate)  # noqa: PLW2901
-                    yield audio_obj.as_bytes()
-
-            bytes_generator = audio_to_bytes_generator()
-
-            # Handle response format conversions
-            if body.response_format in SUPPORTED_NON_STREAMABLE_RESPONSE_FORMATS:
-                audio_data = b"".join(bytes_generator)
-                sample_rate = target_sample_rate or (
-                    kokoro.SAMPLE_RATE
-                    if isinstance(executor.model_manager, KokoroModelManager)
-                    else 22050  # Piper default sample rate
-                )
-                audio_data = convert_audio_format(audio_data, sample_rate, body.response_format)
-                return Response(audio_data, media_type=f"audio/{body.response_format}")
-
-            if body.response_format != "pcm":
-                sample_rate = target_sample_rate or (
-                    kokoro.SAMPLE_RATE
-                    if isinstance(executor.model_manager, KokoroModelManager)
-                    else 22050  # Piper default sample rate
-                )
-                bytes_generator = (
-                    convert_audio_format(audio_bytes, sample_rate, body.response_format)
-                    for audio_bytes in bytes_generator
-                )
-
-            return StreamingResponse(bytes_generator, media_type=f"audio/{body.response_format}")
-
-        raise HTTPException(
-            status_code=500,
-            detail=f"Executor for model '{body.model}' exists but is not properly configured. This is a bug.",
+        return StreamingResponse(
+            stream_audio_as_formatted_bytes(
+                audio_generator,
+                audio_format=body.response_format,
+                sample_rate=body.sample_rate,
+            ),
+            media_type=response_format_to_mime_type(body.response_format),
         )
     except ValueError as e:
-        if "speed must be between" in str(e).lower():
+        if "speed must be between" in str(e):
             logger.warning("Unsupported speed value requested for speech synthesis")
             raise HTTPException(status_code=422, detail=str(e)) from e
         raise

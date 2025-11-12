@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import TYPE_CHECKING, BinaryIO, cast
+import queue as queue_module
+import subprocess
+import threading
+from typing import TYPE_CHECKING, BinaryIO, Literal, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 import numpy as np
 import soundfile as sf
@@ -10,6 +16,8 @@ import soundfile as sf
 from speaches.config import SAMPLES_PER_SECOND
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
+
     from numpy.typing import NDArray
 
     from speaches.routers.speech import ResponseFormat
@@ -26,8 +34,8 @@ def resample_audio_data(
     return np.interp(np.linspace(0, len(data), target_length), np.arange(len(data)), data).astype(np.float32)
 
 
-# aip 'Write a function `resample_audio` which would take in RAW PCM 16-bit signed, little-endian audio data represented as bytes (`audio_bytes`) and resample it (either downsample or upsample) from `sample_rate` to `target_sample_rate` using numpy'
-def resample_audio(audio_bytes: bytes, sample_rate: int, target_sample_rate: int) -> bytes:
+# aip 'Write a function `resample_audio_bytes` which would take in RAW PCM 16-bit signed, little-endian audio data represented as bytes (`audio_bytes`) and resample it (either downsample or upsample) from `sample_rate` to `target_sample_rate` using numpy'
+def resample_audio_bytes(audio_bytes: bytes, sample_rate: int, target_sample_rate: int) -> bytes:
     audio_data = np.frombuffer(audio_bytes, dtype=np.int16)
     duration = len(audio_data) / sample_rate
     target_length = int(duration * target_sample_rate)
@@ -138,3 +146,124 @@ class Audio:
                 raise ValueError(msg)
         concatenated_data = np.concatenate([audio.data for audio in audios])
         return Audio(concatenated_data, sample_rate=sample_rate)
+
+
+def stream_audio_as_formatted_bytes(  # noqa: C901, PLR0915
+    audio_generator: Generator[Audio],
+    audio_format: Literal["aac", "pcm", "opus", "mp3", "flac", "wav"],
+    sample_rate: int | None = None,
+) -> Generator[bytes]:
+    if audio_format == "pcm":
+        for audio in audio_generator:
+            if sample_rate is not None:
+                audio.resample(sample_rate)
+            yield audio.as_bytes()
+        return
+
+    first_audio = next(audio_generator, None)
+    if first_audio is None:
+        return
+
+    source_sample_rate = first_audio.sample_rate
+    target_sample_rate = sample_rate if sample_rate is not None else source_sample_rate
+
+    format_args = {
+        "mp3": ["-f", "mp3", "-codec:a", "libmp3lame"],
+        "wav": ["-f", "wav"],
+        "flac": ["-f", "flac"],
+        "opus": ["-f", "opus", "-codec:a", "libopus"],
+        "aac": ["-f", "adts", "-codec:a", "aac"],
+    }
+
+    cmd = [
+        "ffmpeg",
+        "-f",
+        "s16le",
+        "-ar",
+        str(source_sample_rate),
+        "-ac",
+        "1",
+        "-i",
+        "pipe:0",
+        "-ar",
+        str(target_sample_rate),
+        *format_args[audio_format],
+        "pipe:1",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+    ]
+
+    process = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    output_queue: queue_module.Queue[bytes | None] = queue_module.Queue(maxsize=10)
+    error_queue: queue_module.Queue[Exception] = queue_module.Queue()
+
+    def write_to_stdin() -> None:
+        try:
+            if process.stdin is None:
+                msg = "ffmpeg stdin is None"
+                raise RuntimeError(msg)
+            process.stdin.write(first_audio.as_bytes())
+            for audio in audio_generator:
+                if audio.sample_rate != source_sample_rate:
+                    msg = f"Inconsistent sample rate: expected {source_sample_rate}, got {audio.sample_rate}"
+                    raise ValueError(msg)
+                process.stdin.write(audio.as_bytes())
+            process.stdin.close()
+        except Exception as e:  # noqa: BLE001
+            error_queue.put(e)
+
+    def read_from_stdout() -> None:
+        try:
+            if process.stdout is None:
+                msg = "ffmpeg stdout is None"
+                raise RuntimeError(msg)
+            while True:
+                chunk = process.stdout.read(4096)
+                if not chunk:
+                    break
+                output_queue.put(chunk)
+            output_queue.put(None)
+        except Exception as e:  # noqa: BLE001
+            error_queue.put(e)
+
+    writer_thread = threading.Thread(target=write_to_stdin, daemon=True)
+    reader_thread = threading.Thread(target=read_from_stdout, daemon=True)
+
+    writer_thread.start()
+    reader_thread.start()
+
+    try:
+        while True:
+            if not error_queue.empty():
+                raise error_queue.get()
+
+            try:
+                chunk = output_queue.get(timeout=0.1)
+            except queue_module.Empty:
+                continue
+
+            if chunk is None:
+                break
+
+            yield chunk
+
+        writer_thread.join(timeout=5.0)
+        reader_thread.join(timeout=5.0)
+
+        return_code = process.wait(timeout=5.0)
+        if return_code != 0:
+            stderr_output = process.stderr.read().decode() if process.stderr else ""
+            msg = f"ffmpeg failed with return code {return_code}: {stderr_output}"
+            raise RuntimeError(msg)
+
+    except Exception:
+        process.kill()
+        process.wait()
+        raise

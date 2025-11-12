@@ -75,10 +75,10 @@ class PyannoteModelRegistry(ModelRegistry):
             result = get_model_card_data_from_cached_repo_info(cached_repo_info)
             if result is None:
                 continue
-            model_card_data, _ = result
+            model_card_data, model_tags = result
             if model_card_data is None:
                 continue
-            if self.hf_model_filter.passes_filter(cached_repo_info.repo_id, model_card_data):
+            if self.hf_model_filter.passes_filter(cached_repo_info.repo_id, model_card_data, model_tags):
                 yield Model(
                     id=cached_repo_info.repo_id,
                     created=int(cached_repo_info.last_modified),
