@@ -13,10 +13,10 @@ def client():
 def test_translation_endpoint_basic(client):
     """Test basic translation endpoint functionality."""
     response = client.post(
-        "/v1/audio/translations",
+        "/v1/translations",
         data={
             "text": "Hello, how are you?",
-            "model": "Helsinki-NLP/opus-mt-en-zh",
+            "model": "gaudi/opus-mt-en-zh-ctranslate2",
         },
     )
     assert response.status_code == 200
@@ -25,7 +25,7 @@ def test_translation_endpoint_basic(client):
     assert "model" in data
     assert "source_language" in data
     assert "target_language" in data
-    assert data["model"] == "Helsinki-NLP/opus-mt-en-zh"
+    assert data["model"] == "gaudi/opus-mt-en-zh-ctranslate2"
     assert data["source_language"] == "en"
     assert data["target_language"] == "zh"
     assert len(data["text"]) > 0
@@ -34,9 +34,9 @@ def test_translation_endpoint_basic(client):
 def test_translation_endpoint_missing_text(client):
     """Test translation endpoint with missing text parameter."""
     response = client.post(
-        "/v1/audio/translations",
+        "/v1/translations",
         data={
-            "model": "Helsinki-NLP/opus-mt-en-zh",
+            "model": "gaudi/opus-mt-en-zh-ctranslate2",
         },
     )
     assert response.status_code == 422
@@ -45,7 +45,7 @@ def test_translation_endpoint_missing_text(client):
 def test_translation_endpoint_missing_model(client):
     """Test translation endpoint with missing model parameter."""
     response = client.post(
-        "/v1/audio/translations",
+        "/v1/translations",
         data={
             "text": "Hello, how are you?",
         },
@@ -56,10 +56,10 @@ def test_translation_endpoint_missing_model(client):
 def test_translation_endpoint_custom_languages(client):
     """Test translation endpoint with custom source and target languages."""
     response = client.post(
-        "/v1/audio/translations",
+        "/v1/translations",
         data={
             "text": "Hello, how are you?",
-            "model": "Helsinki-NLP/opus-mt-en-zh",
+            "model": "gaudi/opus-mt-en-zh-ctranslate2",
             "source_language": "en",
             "target_language": "zh",
         },
@@ -73,10 +73,10 @@ def test_translation_endpoint_custom_languages(client):
 def test_translation_endpoint_empty_text(client):
     """Test translation endpoint with empty text."""
     response = client.post(
-        "/v1/audio/translations",
+        "/v1/translations",
         data={
             "text": "",
-            "model": "Helsinki-NLP/opus-mt-en-zh",
+            "model": "gaudi/opus-mt-en-zh-ctranslate2",
         },
     )
     # Should still return 200 but with empty translation
@@ -87,7 +87,7 @@ def test_translation_endpoint_empty_text(client):
 def test_translation_endpoint_real_model(client):
     """Test translation endpoint with a real model (requires model download)."""
     response = client.post(
-        "/v1/audio/translations",
+        "/v1/translations",
         data={
             "text": "Hello, world!",
             "model": "Helsinki-NLP/opus-mt-en-es",
