@@ -41,7 +41,7 @@ from speaches.realtime.rtc.audio_stream_track import AudioStreamTrack
 from speaches.realtime.session import create_session_object_configuration
 from speaches.realtime.session_event_router import event_router as session_event_router
 from speaches.realtime.utils import generate_event_id, parse_model_parameter
-from speaches.routers.realtime.ws import event_listener
+from speaches.routers.realtime_ws import event_listener
 from speaches.types.realtime import (
     SERVER_EVENT_TYPES,
     ErrorEvent,
@@ -241,7 +241,9 @@ def datachannel_handler(ctx: SessionContext, channel: RTCDataChannel) -> None:
         logger.info(f"Data channel buffered amount low: {channel.id} (args={args}, kwargs={kwargs})")
 
 
-def iceconnectionstatechange_handler(_ctx: SessionContext, pc: RTCPeerConnection, audio_track: AudioStreamTrack) -> None:
+def iceconnectionstatechange_handler(
+    _ctx: SessionContext, pc: RTCPeerConnection, audio_track: AudioStreamTrack
+) -> None:
     logger.info(f"ICE connection state changed to {pc.iceConnectionState}")
     if pc.iceConnectionState in ["failed", "closed"]:
         logger.info("Peer connection closed - stopping audio track")
