@@ -1,7 +1,11 @@
+import asyncio
+from collections.abc import AsyncGenerator, Generator
 from datetime import UTC, datetime
 import os
-from typing import Any
+from typing import Any, TypeVar
 import uuid
+
+T = TypeVar("T")
 
 
 class APIProxyError(Exception):
@@ -51,3 +55,29 @@ def format_api_proxy_error(exc: "APIProxyError", context: str = "") -> str:
         f"Debug: {exc.debug}\nContext: {context}\nTimestamp: {exc.timestamp}" if debug_mode and exc.debug else ""
     )
     return f"[ERROR] {user_message}\nSuggestions: {', '.join(suggestions)}" + (f"\n{debug_info}" if debug_info else "")
+
+
+def async_to_sync_generator(async_gen: AsyncGenerator[T, None]) -> Generator[T, None, None]:
+    """Convert an async generator to a sync generator.
+
+    This function creates a new event loop for each iteration, which is necessary
+    because Kokoro's TTS API is async but the handler protocol requires sync generators.
+
+    Args:
+        async_gen: The async generator to convert
+
+    Yields:
+        Items from the async generator
+
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        while True:
+            try:
+                item = loop.run_until_complete(async_gen.__anext__())
+                yield item
+            except StopAsyncIteration:
+                break
+    finally:
+        loop.close()

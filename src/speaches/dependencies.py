@@ -1,7 +1,7 @@
 from functools import lru_cache
 import logging
 import time
-from typing import Annotated
+from typing import Annotated, cast
 
 import av.error
 from fastapi import (
@@ -14,11 +14,12 @@ from fastapi import (
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from faster_whisper.audio import decode_audio
 from httpx import ASGITransport, AsyncClient
+import numpy as np
 from numpy import float32
-from numpy.typing import NDArray
 from openai import AsyncOpenAI
 from openai.resources.audio import AsyncSpeech, AsyncTranscriptions
 
+from speaches.audio import Audio
 from speaches.config import Config
 from speaches.executors.shared.registry import ExecutorRegistry
 
@@ -71,14 +72,23 @@ ApiKeyDependency = Depends(verify_api_key)
 # TODO: test async vs sync performance
 def audio_file_dependency(
     file: Annotated[UploadFile, Form()],
-) -> NDArray[float32]:
+) -> Audio:
     try:
         logger.debug(
             f"Decoding audio file: {file.filename}, content_type: {file.content_type}, header: {file.headers}, size: {file.size}"
         )
         start = time.perf_counter()
-        audio = decode_audio(file.file, sampling_rate=16000)
-        elapsed, duration = time.perf_counter() - start, len(audio) / 16000
+
+        # Handle PCM/RAW audio formats
+        if file.content_type in ("audio/pcm", "audio/raw"):
+            raw_bytes = file.file.read()
+            audio_int16 = np.frombuffer(raw_bytes, dtype=np.int16)
+            audio_data = cast("np.typing.NDArray[float32]", audio_int16.astype(np.float32) / 32768.0)
+        else:
+            audio_data = cast("np.typing.NDArray[float32]", decode_audio(file.file, sampling_rate=16000))
+
+        audio = Audio(audio_data, sample_rate=16000)
+        elapsed, duration = time.perf_counter() - start, audio.duration
         logger.debug(f"Decoded {duration:.5f}s of audio in {elapsed:.5f}s (RTF: {elapsed / duration:.5f})")
     except av.error.InvalidDataError as e:
         raise HTTPException(
@@ -97,10 +107,10 @@ def audio_file_dependency(
         )
         raise HTTPException(status_code=500, detail="Failed to decode audio.") from e
     else:
-        return audio  # pyright: ignore[reportReturnType]
+        return audio
 
 
-AudioFileDependency = Annotated[NDArray[float32], Depends(audio_file_dependency)]
+AudioFileDependency = Annotated[Audio, Depends(audio_file_dependency)]
 
 
 @lru_cache

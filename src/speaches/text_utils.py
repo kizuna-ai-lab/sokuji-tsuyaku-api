@@ -32,6 +32,11 @@ def segments_to_text(segments: Iterable[TranscriptionSegment]) -> str:
     return "".join(segment.text for segment in segments).strip()
 
 
+def format_as_sse(data: str) -> str:
+    """Format data as Server-Sent Events."""
+    return f"data: {data}\n\n"
+
+
 def srt_format_timestamp(ts: float) -> str:
     hours = ts // 3600
     minutes = (ts % 3600) // 60

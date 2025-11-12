@@ -11,6 +11,7 @@ from speaches.executors.parakeet import ParakeetModelManager, parakeet_model_reg
 from speaches.executors.piper import PiperModelManager, piper_model_registry
 from speaches.executors.pyannote import PyannoteModelManager, pyannote_model_registry
 from speaches.executors.shared.executor import Executor
+from speaches.executors.silero_vad_v5 import SileroVADModelManager, silero_vad_model_registry
 from speaches.executors.whisper import WhisperModelManager, whisper_model_registry
 
 
@@ -52,6 +53,12 @@ class ExecutorRegistry:
             model_registry=marian_model_registry,
             task="translation",
         )
+        self._vad_executor = Executor(
+            name="vad",
+            model_manager=SileroVADModelManager(config.vad_model_ttl, config.unstable_ort_opts),
+            model_registry=silero_vad_model_registry,
+            task="voice-activity-detection",
+        )
 
     @property
     def transcription(self):  # noqa: ANN201
@@ -69,6 +76,10 @@ class ExecutorRegistry:
     def translation(self):  # noqa: ANN201
         return (self._marian_executor,)
 
+    @property
+    def vad(self) -> Executor:
+        return self._vad_executor
+
     def all_executors(self):  # noqa: ANN201
         return (
             self._whisper_executor,
@@ -77,4 +88,5 @@ class ExecutorRegistry:
             self._kokoro_executor,
             self._pyannote_executor,
             self._marian_executor,
+            self._vad_executor,
         )

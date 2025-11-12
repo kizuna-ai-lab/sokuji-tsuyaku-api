@@ -11,7 +11,7 @@ from onnxruntime import InferenceSession
 from pydantic import BaseModel, computed_field
 
 from speaches.api_types import Model
-from speaches.audio import resample_audio
+from speaches.audio import Audio, resample_audio
 from speaches.config import OrtOptions  # noqa: TC001
 from speaches.executors.shared.base_model_manager import BaseModelManager, get_ort_providers_with_options
 from speaches.hf_utils import (
@@ -26,7 +26,10 @@ from speaches.model_registry import ModelRegistry
 if TYPE_CHECKING:
     from collections.abc import Generator
 
+    from piper.config import PiperConfig, SynthesisConfig
     from piper.voice import PiperVoice
+
+    from speaches.executors.shared.handler_protocol import SpeechRequest, SpeechResponse
 
 
 PiperVoiceQuality = Literal["x_low", "low", "medium", "high"]
@@ -210,3 +213,22 @@ class PiperModelManager(BaseModelManager["PiperVoice"]):
         inf_sess = InferenceSession(model_files.model, providers=providers)
         conf = PiperConfig.from_dict(json.loads(model_files.config.read_text()))
         return PiperVoice(session=inf_sess, config=conf)
+
+    def handle_speech_request(
+        self,
+        request: SpeechRequest,
+        **_kwargs,
+    ) -> SpeechResponse:
+        from piper.config import SynthesisConfig
+
+        if request.speed < 0.25 or request.speed > 4.0:
+            msg = f"Speed must be between 0.25 and 4.0, got {request.speed}"
+            raise ValueError(msg)
+
+        # TODO: maybe check voice
+        with self.load_model(request.model) as piper_tts:
+            start = time.perf_counter()
+            for audio_chunk in piper_tts.synthesize(request.text, SynthesisConfig(length_scale=1.0 / request.speed)):
+                yield Audio(audio_chunk.audio_float_array, sample_rate=piper_tts.config.sample_rate)
+
+        logger.info(f"Generated audio for {len(request.text)} characters in {time.perf_counter() - start}s")

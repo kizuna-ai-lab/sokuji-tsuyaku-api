@@ -36,7 +36,7 @@ def create_speech_embedding(
     executor = find_executor_for_model_or_raise(model, model_card_data, executor_registry.speaker_embedding, model_tags)
 
     with executor.model_manager.load_model(model) as inference_session:
-        audio_input = audio.astype(np.float32)
+        audio_input = audio.data.astype(np.float32)
         if len(audio_input.shape) == 1:
             audio_input = audio_input.reshape(1, -1)
 
@@ -47,5 +47,5 @@ def create_speech_embedding(
             object="list",
             data=[EmbeddingObject(embedding=embedding)],
             model=model,
-            usage=EmbeddingUsage(prompt_tokens=len(audio), total_tokens=len(audio)),
+            usage=EmbeddingUsage(prompt_tokens=len(audio.data), total_tokens=len(audio.data)),
         )

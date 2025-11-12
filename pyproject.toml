@@ -27,6 +27,7 @@ dependencies = [
     "onnx-asr>=0.7.0",
     "transformers>=4.48.0",
     "sentencepiece>=0.2.0",
+    "httpx-sse>=0.4.1",
 ]
 
 [project.optional-dependencies]

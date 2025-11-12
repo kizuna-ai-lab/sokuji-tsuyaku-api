@@ -7,10 +7,16 @@ import huggingface_hub
 import onnx_asr
 from onnx_asr.adapters import TextResultsAsrAdapter
 from onnx_asr.models import NemoConformerTdt
+import openai.types.audio
 
 from speaches.api_types import Model
 from speaches.config import OrtOptions
 from speaches.executors.shared.base_model_manager import BaseModelManager, get_ort_providers_with_options
+from speaches.executors.shared.handler_protocol import (
+    NonStreamingTranscriptionResponse,
+    StreamingTranscriptionEvent,
+    TranscriptionRequest,
+)
 from speaches.hf_utils import (
     HfModelFilter,
     extract_language_list,
@@ -110,3 +116,33 @@ class ParakeetModelManager(BaseModelManager[TextResultsAsrAdapter]):
     def _load_fn(self, model_id: str) -> TextResultsAsrAdapter:
         providers = get_ort_providers_with_options(self.ort_opts)
         return onnx_asr.load_model(model_id, providers=providers)
+
+    def handle_transcription_request(
+        self, request: TranscriptionRequest, **kwargs
+    ) -> NonStreamingTranscriptionResponse | Generator[StreamingTranscriptionEvent]:
+        if request.stream:
+            return self.handle_streaming_transcription_request(request, **kwargs)
+        else:
+            return self.handle_non_streaming_transcription_request(request, **kwargs)
+
+    def handle_non_streaming_transcription_request(
+        self, request: TranscriptionRequest, **_kwargs
+    ) -> NonStreamingTranscriptionResponse:
+        if request.response_format not in ("text", "json"):
+            msg = f"Parakeet only supports 'text' and 'json' response formats, got '{request.response_format}'"
+            raise ValueError(msg)
+
+        with self.load_model(request.model) as parakeet:
+            result = parakeet.with_timestamps().recognize(request.audio.data, language=request.language)
+
+            match request.response_format:
+                case "text":
+                    return (result.text, "text/plain")
+                case "json":
+                    return openai.types.audio.Transcription(text=result.text)
+
+    def handle_streaming_transcription_request(
+        self, request: TranscriptionRequest, **_kwargs
+    ) -> Generator[StreamingTranscriptionEvent]:
+        msg = "Parakeet does not support streaming transcription"
+        raise NotImplementedError(msg)

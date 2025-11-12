@@ -1,8 +1,10 @@
-from collections.abc import AsyncGenerator, Generator
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator
 import logging
 from pathlib import Path
 import time
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import huggingface_hub
 from kokoro_onnx import Kokoro
@@ -11,7 +13,7 @@ from onnxruntime import InferenceSession
 from pydantic import BaseModel, computed_field
 
 from speaches.api_types import Model
-from speaches.audio import resample_audio
+from speaches.audio import Audio, resample_audio
 from speaches.config import OrtOptions
 from speaches.executors.shared.base_model_manager import BaseModelManager, get_ort_providers_with_options
 from speaches.hf_utils import (
@@ -24,11 +26,20 @@ from speaches.hf_utils import (
 from speaches.model_registry import (
     ModelRegistry,
 )
+from speaches.utils import async_to_sync_generator
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+    from speaches.executors.shared.handler_protocol import SpeechRequest, SpeechResponse
 
 SAMPLE_RATE = 24000  # the default sample rate for Kokoro
 LIBRARY_NAME = "onnx"
 TASK_NAME_TAG = "text-to-speech"
 TAGS = {"speaches", "kokoro"}
+
+# OpenAI voice names for compatibility
+OPENAI_SUPPORTED_SPEECH_VOICE_NAMES = ("alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse")
 
 
 class KokoroModelFiles(BaseModel):
@@ -194,6 +205,31 @@ class KokoroModelManager(BaseModelManager[Kokoro]):
         providers = get_ort_providers_with_options(self.ort_opts)
         inf_sess = InferenceSession(model_files.model, providers=providers)
         return Kokoro.from_session(inf_sess, str(model_files.voices))
+
+    def handle_speech_request(self, request: SpeechRequest, **_kwargs) -> SpeechResponse:
+        if not 0.5 <= request.speed <= 2.0:
+            msg = f"Speed must be between 0.5 and 2.0, got {request.speed}"
+            raise ValueError(msg)
+
+        voice = request.voice
+        if voice in OPENAI_SUPPORTED_SPEECH_VOICE_NAMES:
+            logger.warning(
+                f"OpenAI voice '{voice}' is deprecated. Please use Kokoro voice names directly. "
+                f"Auto-replacing with default voice."
+            )
+            voice = "af_heart"
+
+        voice_language = next(v.language for v in VOICES if v.name == voice)
+
+        start = time.perf_counter()
+        with self.load_model(request.model) as tts:
+            async_stream = tts.create_stream(request.text, voice, lang=voice_language, speed=request.speed)
+            sync_stream = async_to_sync_generator(async_stream)
+
+            for audio_data, _ in sync_stream:
+                yield Audio(audio_data, sample_rate=SAMPLE_RATE)
+
+        logger.info(f"Generated audio for {len(request.text)} characters in {time.perf_counter() - start:.3f}s")
 
 
 async def generate_audio(

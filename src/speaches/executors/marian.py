@@ -173,7 +173,9 @@ class MarianModelManager(BaseModelManager[MarianTranslationModel]):
         )
 
     def handle_text_translation_request(
-        self, request: TextTranslationRequest, **kwargs  # noqa: ARG002
+        self,
+        request: TextTranslationRequest,
+        **kwargs,  # noqa: ARG002
     ) -> TextTranslationResponse:
         """Handle text translation request following the TextTranslationHandler protocol."""
         with self.load_model(request.model) as marian:

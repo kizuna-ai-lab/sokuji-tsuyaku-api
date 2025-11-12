@@ -1,14 +1,12 @@
 import base64
 from io import BytesIO
 import logging
-from typing import Literal
 
-from faster_whisper.transcribe import get_speech_timestamps
-from faster_whisper.vad import VadOptions
 import openai
 from openai.types.beta.realtime.error_event import Error
 
 from speaches.audio import audio_samples_from_file, resample_audio_data
+from speaches.executors.silero_vad_v5 import VadOptions, get_speech_timestamps, to_ms_speech_timestamps
 from speaches.realtime.context import SessionContext
 from speaches.realtime.event_router import EventRouter
 from speaches.realtime.input_audio_buffer import (
@@ -41,16 +39,6 @@ empty_input_audio_buffer_commit_error = Error(
     message="Error committing input audio buffer: the buffer is empty.",
 )
 
-type SpeechTimestamp = dict[Literal["start", "end"], int]
-
-
-# TODO: also found in src/speaches/routers/vad.py. Remove duplication
-def to_ms_speech_timestamps(speech_timestamps: list[SpeechTimestamp]) -> list[SpeechTimestamp]:
-    for i in range(len(speech_timestamps)):
-        speech_timestamps[i]["start"] = speech_timestamps[i]["start"] // MS_SAMPLE_RATE
-        speech_timestamps[i]["end"] = speech_timestamps[i]["end"] // MS_SAMPLE_RATE
-    return speech_timestamps
-
 
 def vad_detection_flow(
     input_audio_buffer: InputAudioBuffer, turn_detection: TurnDetection
@@ -77,7 +65,7 @@ def vad_detection_flow(
         if speech_timestamp is None:
             return None
         input_audio_buffer.vad_state.audio_start_ms = (
-            input_audio_buffer.duration_ms - len(audio_window) // MS_SAMPLE_RATE + speech_timestamp["start"]
+            input_audio_buffer.duration_ms - len(audio_window) // MS_SAMPLE_RATE + speech_timestamp.start
         )
         return InputAudioBufferSpeechStartedEvent(
             item_id=input_audio_buffer.id,
@@ -95,7 +83,7 @@ def vad_detection_flow(
                 audio_end_ms=input_audio_buffer.vad_state.audio_end_ms,
             )
 
-        elif speech_timestamp["end"] < 3000 and input_audio_buffer.duration_ms > 3000:  # FIX: magic number
+        elif speech_timestamp.end < 3000 and input_audio_buffer.duration_ms > 3000:  # FIX: magic number
             input_audio_buffer.vad_state.audio_end_ms = (
                 input_audio_buffer.duration_ms - turn_detection.prefix_padding_ms
             )

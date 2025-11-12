@@ -1,38 +1,38 @@
 import asyncio
-from collections.abc import Generator, Iterable
+from collections.abc import Generator
 import logging
 from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
     Form,
-    HTTPException,
     Request,
     Response,
 )
 from fastapi.responses import StreamingResponse
-from faster_whisper.transcribe import BatchedInferencePipeline, TranscriptionInfo
-from faster_whisper.vad import get_speech_timestamps
-import numpy as np
+import openai.types.audio
 
 from speaches.api_types import (
     DEFAULT_TIMESTAMP_GRANULARITIES,
     TIMESTAMP_GRANULARITIES_COMBINATIONS,
-    CreateTranscriptionResponseJson,
-    CreateTranscriptionResponseVerboseJson,
     TimestampGranularities,
-    TranscriptionSegment,
 )
 from speaches.dependencies import (
     AudioFileDependency,
-    ConfigDependency,
     ExecutorRegistryDependency,
 )
-from speaches.executors.parakeet import ParakeetModelManager
-from speaches.executors.whisper import WhisperModelManager
+from speaches.executors.shared.handler_protocol import (
+    NonStreamingTranscriptionResponse,
+    StreamingTranscriptionEvent,
+    TranscriptionRequest,
+    TranslationRequest,
+    TranslationResponse,
+    VadRequest,
+)
+from speaches.executors.silero_vad_v5 import VadOptions
 from speaches.model_aliases import ModelId
 from speaches.routers.utils import find_executor_for_model_or_raise, get_model_card_data_or_raise
-from speaches.text_utils import segments_to_srt, segments_to_text, segments_to_vtt
+from speaches.text_utils import format_as_sse
 
 logger = logging.getLogger(__name__)
 
@@ -41,109 +41,59 @@ router = APIRouter(tags=["automatic-speech-recognition"])
 type ResponseFormat = Literal["text", "json", "verbose_json", "srt", "vtt"]
 RESPONSE_FORMATS = ("text", "json", "verbose_json", "srt", "vtt")
 
-# https://platform.openai.com/docs/api-reference/audio/createTranscription#audio-createtranscription-response_format
 DEFAULT_RESPONSE_FORMAT: ResponseFormat = "json"
 
+# NOTE: copied from faster_whisper.transcribe
+DEFAULT_VAD_OPTIONS = VadOptions(min_silence_duration_ms=160, max_speech_duration_s=30)
 
-def segments_to_response(
-    segments: Iterable[TranscriptionSegment],
-    transcription_info: TranscriptionInfo,
-    response_format: ResponseFormat,
+
+def translation_response_to_http_response(res: TranslationResponse) -> Response:
+    if isinstance(res, tuple):
+        text, media_type = res
+        return Response(content=text, media_type=media_type)
+    elif isinstance(res, (openai.types.audio.Translation, openai.types.audio.TranslationVerbose)):
+        return Response(content=res.model_dump_json(), media_type="application/json")
+
+    msg = f"Unexpected translation response type: {type(res)}"
+    raise TypeError(msg)
+
+
+@router.post(
+    "/v1/audio/translations",
+    response_model=str | openai.types.audio.Translation | openai.types.audio.TranslationVerbose,
+)
+def translate_file(
+    executor_registry: ExecutorRegistryDependency,
+    audio: AudioFileDependency,
+    model: Annotated[ModelId, Form()],
+    prompt: Annotated[str | None, Form()] = None,
+    response_format: Annotated[ResponseFormat, Form()] = DEFAULT_RESPONSE_FORMAT,
+    temperature: Annotated[float, Form()] = 0.0,
 ) -> Response:
-    segments = list(segments)
-    match response_format:
-        case "text":
-            return Response(segments_to_text(segments), media_type="text/plain")
-        case "json":
-            return Response(
-                CreateTranscriptionResponseJson.from_segments(segments).model_dump_json(),
-                media_type="application/json",
-            )
-        case "verbose_json":
-            return Response(
-                CreateTranscriptionResponseVerboseJson.from_segments(segments, transcription_info).model_dump_json(),
-                media_type="application/json",
-            )
-        case "vtt":
-            return Response(
-                "".join(segments_to_vtt(segment, i) for i, segment in enumerate(segments)), media_type="text/vtt"
-            )
-        case "srt":
-            return Response(
-                "".join(segments_to_srt(segment, i) for i, segment in enumerate(segments)), media_type="text/plain"
-            )
+    """Translate audio file to English text using Whisper.
+
+    This endpoint is for audio-to-English translation (Whisper translate mode).
+    For text-to-text translation, use /v1/translations endpoint with MarianMT models.
+    """
+    model_card_data, model_tags = get_model_card_data_or_raise(model)
+    executor = find_executor_for_model_or_raise(model, model_card_data, executor_registry.translation, model_tags)
+
+    vad_request = VadRequest(audio=audio, vad_options=DEFAULT_VAD_OPTIONS)
+    speech_segments = executor_registry.vad.model_manager.handle_vad_request(vad_request)
+
+    translation_request = TranslationRequest(
+        audio=audio,
+        model=model,
+        prompt=prompt,
+        response_format=response_format,
+        temperature=temperature,
+        speech_segments=speech_segments,
+        vad_options=DEFAULT_VAD_OPTIONS,
+    )
+    res = executor.model_manager.handle_translation_request(translation_request)
+    return translation_response_to_http_response(res)
 
 
-def format_as_sse(data: str) -> str:
-    return f"data: {data}\n\n"
-
-
-def segments_to_streaming_response(
-    segments: Iterable[TranscriptionSegment],
-    transcription_info: TranscriptionInfo,
-    response_format: ResponseFormat,
-) -> StreamingResponse:
-    def segment_responses() -> Generator[str, None, None]:
-        for i, segment in enumerate(segments):
-            if response_format == "text":
-                data = segment.text
-            elif response_format == "json":
-                data = CreateTranscriptionResponseJson.from_segments([segment]).model_dump_json()
-            elif response_format == "verbose_json":
-                data = CreateTranscriptionResponseVerboseJson.from_segment(
-                    segment, transcription_info
-                ).model_dump_json()
-            elif response_format == "vtt":
-                data = segments_to_vtt(segment, i)
-            elif response_format == "srt":
-                data = segments_to_srt(segment, i)
-            yield format_as_sse(data)
-
-    return StreamingResponse(segment_responses(), media_type="text/event-stream")
-
-
-# NOTE: This endpoint has been replaced with text-to-text translation
-# in the translations router. The original audio-to-text translation
-# functionality (Whisper translate mode) has been removed in favor of
-# MarianMT text translation.
-# @router.post(
-#     "/v1/audio/translations",
-#     response_model=str | CreateTranscriptionResponseJson | CreateTranscriptionResponseVerboseJson,
-# )
-# def translate_file(
-#     config: ConfigDependency,
-#     executor_registry: ExecutorRegistryDependency,
-#     audio: AudioFileDependency,
-#     model: Annotated[ModelId, Form()],
-#     prompt: Annotated[str | None, Form()] = None,
-#     response_format: Annotated[ResponseFormat, Form()] = DEFAULT_RESPONSE_FORMAT,
-#     temperature: Annotated[float, Form()] = 0.0,
-#     stream: Annotated[bool, Form()] = False,
-#     vad_filter: Annotated[bool | None, Form()] = None,
-# ) -> Response | StreamingResponse:
-#     # Use config default if vad_filter not explicitly provided
-#     effective_vad_filter = vad_filter if vad_filter is not None else config._unstable_vad_filter  # noqa: SLF001
-#
-#     # Translation is only supported by Whisper
-#     whisper_executor = executor_registry.transcription[0]  # Whisper is first
-#     with whisper_executor.model_manager.load_model(model) as whisper:
-#         whisper_model = BatchedInferencePipeline(model=whisper) if config.whisper.use_batched_mode else whisper
-#         segments, transcription_info = whisper_model.transcribe(
-#             audio,
-#             task="translate",
-#             initial_prompt=prompt,
-#             temperature=temperature,
-#             vad_filter=effective_vad_filter,
-#         )
-#         segments = TranscriptionSegment.from_faster_whisper_segments(segments)
-#
-#         if stream:
-#             return segments_to_streaming_response(segments, transcription_info, response_format)
-#         else:
-#             return segments_to_response(segments, transcription_info, response_format)
-
-
-# HACK: Since Form() doesn't support `alias`, we need to use a workaround.
 async def get_timestamp_granularities(request: Request) -> TimestampGranularities:
     form = await request.form()
     if form.get("timestamp_granularities[]") is None:
@@ -152,17 +102,29 @@ async def get_timestamp_granularities(request: Request) -> TimestampGranularitie
     assert timestamp_granularities in TIMESTAMP_GRANULARITIES_COMBINATIONS, (
         f"{timestamp_granularities} is not a valid value for `timestamp_granularities[]`."
     )
-    return timestamp_granularities  # type: ignore[return-value]
+    return timestamp_granularities  # pyright: ignore[reportReturnType]
 
 
-# https://platform.openai.com/docs/api-reference/audio/createTranscription
-# https://github.com/openai/openai-openapi/blob/master/openapi.yaml#L8915
+def transcription_response_to_http_response(
+    res: NonStreamingTranscriptionResponse | Generator[StreamingTranscriptionEvent],
+) -> Response | StreamingResponse:
+    if isinstance(res, tuple):
+        text, media_type = res
+        return Response(content=text, media_type=media_type)
+    elif isinstance(res, (openai.types.audio.Transcription, openai.types.audio.TranscriptionVerbose)):
+        return Response(content=res.model_dump_json(), media_type="application/json")
+    else:
+        return StreamingResponse(
+            (format_as_sse(x.model_dump_json()) for x in res),
+            media_type="text/event-stream",
+        )
+
+
 @router.post(
     "/v1/audio/transcriptions",
-    response_model=str | CreateTranscriptionResponseJson | CreateTranscriptionResponseVerboseJson,
+    response_model=str | openai.types.audio.Transcription | openai.types.audio.TranscriptionVerbose,
 )
-def transcribe_file(  # noqa: C901, PLR0912
-    config: ConfigDependency,
+def transcribe_file(
     executor_registry: ExecutorRegistryDependency,
     request: Request,
     audio: AudioFileDependency,
@@ -173,113 +135,41 @@ def transcribe_file(  # noqa: C901, PLR0912
     temperature: Annotated[float, Form()] = 0.0,
     timestamp_granularities: Annotated[
         TimestampGranularities,
-        # WARN: `alias` doesn't actually work.
         Form(alias="timestamp_granularities[]"),
     ] = ["segment"],
     stream: Annotated[bool, Form()] = False,
+    # non standard parameters
     hotwords: Annotated[str | None, Form()] = None,
-    vad_filter: Annotated[bool | None, Form()] = None,
     without_timestamps: Annotated[bool, Form()] = True,
 ) -> Response | StreamingResponse:
-    # Use config default if vad_filter not explicitly provided
-    effective_vad_filter = vad_filter if vad_filter is not None else config._unstable_vad_filter  # noqa: SLF001
-
     timestamp_granularities = asyncio.run(get_timestamp_granularities(request))
     if timestamp_granularities != DEFAULT_TIMESTAMP_GRANULARITIES and response_format != "verbose_json":
         logger.warning(
-            "It only makes sense to provide `timestamp_granularities[]` when `response_format` is set to `verbose_json`. See https://platform.openai.com/docs/api-reference/audio/createTranscription#audio-createtranscription-timestamp_granularities."
+            "It only makes sense to provide `timestamp_granularities[]` when `response_format` is set to `verbose_json`."
         )
 
-    model_card_data, model_tags = get_model_card_data_or_raise(model)
-    executor = find_executor_for_model_or_raise(model, model_card_data, executor_registry.transcription, model_tags)
-
-    if isinstance(executor.model_manager, WhisperModelManager):
-        with executor.model_manager.load_model(model) as whisper:
-            whisper_model = BatchedInferencePipeline(model=whisper) if config.whisper.use_batched_mode else whisper
-            segments, transcription_info = whisper_model.transcribe(
-                audio,
-                task="transcribe",
-                language=language,
-                initial_prompt=prompt,
-                word_timestamps="word" in timestamp_granularities,
-                temperature=temperature,
-                vad_filter=effective_vad_filter,
-                hotwords=hotwords,
-                without_timestamps=without_timestamps,
-            )
-            segments = TranscriptionSegment.from_faster_whisper_segments(segments)
-
-            if stream:
-                return segments_to_streaming_response(segments, transcription_info, response_format)
-            else:
-                return segments_to_response(segments, transcription_info, response_format)
-    elif isinstance(executor.model_manager, ParakeetModelManager):
-        if stream:
-            raise HTTPException(status_code=500, detail=f"Model '{model}' does not support streaming yet.")
-        if response_format not in ("text", "json"):
-            raise HTTPException(
-                status_code=500,
-                detail=f"Model '{model}' only supports 'text' and 'json' response formats for now.",
-            )
-        with executor.model_manager.load_model(model) as parakeet:
-            # TODO: issue warnings when client specifies unsupported parameters like `prompt`, `temperature`, `hotwords`, etc.
-
-            # Somewhat hacky work around for transcribing large audio files by splitting them into smaller chunks using VAD. May not work well for all use cases. Bug: https://github.com/istupakov/onnx-asr/issues/18
-
-            # Apply VAD to split audio into speech segments
-            speech_timestamps = get_speech_timestamps(audio, sampling_rate=16000)
-
-            if not speech_timestamps:
-                # No speech detected, return empty transcription
-                match response_format:
-                    case "text":
-                        return Response("", media_type="text/plain")
-                    case "json":
-                        return Response(
-                            CreateTranscriptionResponseJson(text="").model_dump_json(),
-                            media_type="application/json",
-                        )
-
-            # Extract speech segments from audio
-            waveforms = []
-            waveforms_len = []
-            for timestamp in speech_timestamps:
-                start = timestamp["start"]
-                end = timestamp["end"]
-                segment = audio[start:end]
-                waveforms.append(segment)
-                waveforms_len.append(len(segment))
-
-            # Prepare batch arrays
-            max_len = max(waveforms_len)
-            waveforms_batch = np.zeros((len(waveforms), max_len), dtype=np.float32)
-            for i, waveform in enumerate(waveforms):
-                waveforms_batch[i, : len(waveform)] = waveform
-            waveforms_len_batch = np.array(waveforms_len, dtype=np.int64)
-
-            # print all segment sizes in descending order
-
-            logger.info(f"Transcribing {len(waveforms)} segments with lengths: {sorted(waveforms_len, reverse=True)}")
-            # Process all segments in batch
-            results = list(
-                parakeet.with_timestamps().asr.recognize_batch(waveforms_batch, waveforms_len_batch, language=language)
-            )
-
-            # Combine results
-            combined_text = " ".join(result.text for result in results)
-
-            match response_format:
-                case "text":
-                    return Response(combined_text, media_type="text/plain")
-                case "json":
-                    return Response(
-                        CreateTranscriptionResponseJson(
-                            text=combined_text,
-                        ).model_dump_json(),
-                        media_type="application/json",
-                    )
-
-    raise HTTPException(
-        status_code=500,
-        detail=f"Executor for model '{model}' exists but is not properly configured. This is a bug.",
+    transcription_model_card_data, transcription_model_tags = get_model_card_data_or_raise(model)
+    transcription_executor = find_executor_for_model_or_raise(
+        model, transcription_model_card_data, executor_registry.transcription, transcription_model_tags
     )
+
+    vad_request = VadRequest(audio=audio, vad_options=DEFAULT_VAD_OPTIONS)
+    speech_segments = executor_registry.vad.model_manager.handle_vad_request(vad_request)
+
+    transcription_request = TranscriptionRequest(
+        audio=audio,
+        model=model,
+        language=language,
+        prompt=prompt,
+        response_format=response_format,
+        temperature=temperature,
+        timestamp_granularities=timestamp_granularities,
+        stream=stream,
+        hotwords=hotwords,
+        speech_segments=speech_segments,
+        vad_options=DEFAULT_VAD_OPTIONS,
+        without_timestamps=without_timestamps,
+    )
+    res = transcription_executor.model_manager.handle_transcription_request(transcription_request)
+    http_res = transcription_response_to_http_response(res)
+    return http_res

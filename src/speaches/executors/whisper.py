@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from faster_whisper import WhisperModel
+from faster_whisper import BatchedInferencePipeline, WhisperModel
+import faster_whisper.transcribe
 import huggingface_hub
+import openai.types.audio
 from pydantic import BaseModel
 
 from speaches.api_types import Model
@@ -17,13 +19,24 @@ from speaches.hf_utils import (
     list_model_files,
 )
 from speaches.model_registry import ModelRegistry
+from speaches.text_utils import segments_to_srt, segments_to_vtt
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Iterable
     from pathlib import Path
 
+    from openai.types import AudioResponseFormat
+
+    from speaches.api_types import TranscriptionSegment
     from speaches.config import (
         WhisperConfig,
+    )
+    from speaches.executors.shared.handler_protocol import (
+        AudioTranslationRequest,
+        AudioTranslationResponse,
+        NonStreamingTranscriptionResponse,
+        StreamingTranscriptionEvent,
+        TranscriptionRequest,
     )
 
 LIBRARY_NAME = "ctranslate2"
@@ -35,6 +48,50 @@ hf_model_filter = HfModelFilter(
     library_name=LIBRARY_NAME,
     task=TASK_NAME_TAG,
 )
+
+
+def segments_to_text(segments: Iterable[TranscriptionSegment]) -> str:
+    return " ".join(segment.text for segment in segments)
+
+
+def segments_to_transcription_response(
+    segments: list[TranscriptionSegment],
+    transcription_info: faster_whisper.transcribe.TranscriptionInfo,
+    response_format: AudioResponseFormat,
+) -> NonStreamingTranscriptionResponse:
+    match response_format:
+        case "text":
+            return (segments_to_text(segments), "text/plain")
+        case "json":
+            return openai.types.audio.Transcription(text=segments_to_text(segments))
+        case "verbose_json":
+            return openai.types.audio.TranscriptionVerbose(
+                language=transcription_info.language,
+                duration=transcription_info.duration,
+                text=segments_to_text(segments),
+                segments=[
+                    openai.types.audio.TranscriptionSegment(
+                        id=segment.id,
+                        seek=segment.seek,
+                        start=segment.start,
+                        end=segment.end,
+                        text=segment.text,
+                        tokens=segment.tokens,
+                        temperature=segment.temperature,
+                        avg_logprob=segment.avg_logprob,
+                        compression_ratio=segment.compression_ratio,
+                        no_speech_prob=segment.no_speech_prob,
+                    )
+                    for segment in segments
+                ],
+            )
+        case "vtt":
+            return ("\n".join(segments_to_vtt(segment, i) for i, segment in enumerate(segments)), "text/vtt")
+        case "srt":
+            return ("\n".join(segments_to_srt(segment, i) for i, segment in enumerate(segments)), "text/plain")
+        case _:
+            msg = f"Unsupported response format: {response_format}"
+            raise NotImplementedError(msg)
 
 
 class WhisperModelFiles(BaseModel):
@@ -125,3 +182,119 @@ class WhisperModelManager(BaseModelManager[WhisperModel]):
             cpu_threads=self.whisper_config.cpu_threads,
             num_workers=self.whisper_config.num_workers,
         )
+
+    def handle_transcription_request(
+        self, request: TranscriptionRequest, **kwargs
+    ) -> NonStreamingTranscriptionResponse | Generator[StreamingTranscriptionEvent]:
+        if request.stream:
+            return self.handle_streaming_transcription_request(request, **kwargs)
+        else:
+            return self.handle_non_streaming_transcription_request(request, **kwargs)
+
+    def handle_non_streaming_transcription_request(
+        self, request: TranscriptionRequest, **_kwargs
+    ) -> NonStreamingTranscriptionResponse:
+        with self.load_model(request.model) as whisper:
+            whisper_model = BatchedInferencePipeline(model=whisper)
+
+            segments_iter, transcription_info = whisper_model.transcribe(
+                request.audio.data,
+                task="transcribe",
+                language=request.language,
+                initial_prompt=request.prompt,
+                word_timestamps="word" in request.timestamp_granularities,
+                temperature=request.temperature,
+                vad_filter=request.vad_options is not None,
+                hotwords=request.hotwords,
+                without_timestamps=request.without_timestamps,
+            )
+
+            from speaches.api_types import TranscriptionSegment
+
+            segments = list(TranscriptionSegment.from_faster_whisper_segments(segments_iter))
+
+            return segments_to_transcription_response(segments, transcription_info, request.response_format)
+
+    def handle_streaming_transcription_request(
+        self, request: TranscriptionRequest, **_kwargs
+    ) -> Generator[StreamingTranscriptionEvent]:
+        with self.load_model(request.model) as whisper:
+            whisper_model = BatchedInferencePipeline(model=whisper)
+
+            segments_iter, _transcription_info = whisper_model.transcribe(
+                request.audio.data,
+                task="transcribe",
+                language=request.language,
+                initial_prompt=request.prompt,
+                word_timestamps="word" in request.timestamp_granularities,
+                temperature=request.temperature,
+                vad_filter=request.vad_options is not None,
+                hotwords=request.hotwords,
+                without_timestamps=request.without_timestamps,
+            )
+
+            from speaches.api_types import TranscriptionSegment
+
+            full_text = ""
+            for segment in TranscriptionSegment.from_faster_whisper_segments(segments_iter):
+                full_text += segment.text
+                yield openai.types.audio.TranscriptionTextDeltaEvent(
+                    type="transcript.text.delta",
+                    delta=segment.text,
+                    text=full_text,
+                )
+
+            yield openai.types.audio.TranscriptionTextDoneEvent(
+                type="transcript.text.done",
+                text=full_text,
+            )
+
+    def handle_audio_translation_request(self, request: AudioTranslationRequest, **_kwargs) -> AudioTranslationResponse:
+        with self.load_model(request.model) as whisper:
+            whisper_model = BatchedInferencePipeline(model=whisper)
+
+            segments_iter, transcription_info = whisper_model.transcribe(
+                request.audio.data,
+                task="translate",
+                initial_prompt=request.prompt,
+                temperature=request.temperature,
+                vad_filter=request.vad_options is not None,
+            )
+
+            from speaches.api_types import TranscriptionSegment
+
+            segments = list(TranscriptionSegment.from_faster_whisper_segments(segments_iter))
+
+            match request.response_format:
+                case "text":
+                    return (segments_to_text(segments), "text/plain")
+                case "json":
+                    return openai.types.audio.Translation(text=segments_to_text(segments))
+                case "verbose_json":
+                    return openai.types.audio.TranslationVerbose(
+                        language=transcription_info.language,
+                        duration=transcription_info.duration,
+                        text=segments_to_text(segments),
+                        segments=[
+                            openai.types.audio.TranscriptionSegment(
+                                id=segment.id,
+                                seek=segment.seek,
+                                start=segment.start,
+                                end=segment.end,
+                                text=segment.text,
+                                tokens=segment.tokens,
+                                temperature=segment.temperature,
+                                avg_logprob=segment.avg_logprob,
+                                compression_ratio=segment.compression_ratio,
+                                no_speech_prob=segment.no_speech_prob,
+                            )
+                            for segment in segments
+                        ],
+                    )
+                case "vtt":
+                    return ("\n".join(segments_to_vtt(segment, i) for i, segment in enumerate(segments)), "text/vtt")
+                case "srt":
+                    return ("\n".join(segments_to_srt(segment, i) for i, segment in enumerate(segments)), "text/plain")
+                case _:
+                    msg = f"Unsupported response format: {request.response_format}"
+                    raise NotImplementedError(msg)

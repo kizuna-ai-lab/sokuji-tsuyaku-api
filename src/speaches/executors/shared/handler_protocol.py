@@ -8,18 +8,7 @@ from pydantic import BaseModel, ConfigDict
 from speaches.api_types import TimestampGranularities
 from speaches.audio import Audio
 
-# TODO: Update to silero_vad_v5 when integrated from upstream
-# For now, using faster_whisper VAD types
-try:
-    from speaches.executors.silero_vad_v5 import SpeechTimestamp, VadOptions
-except ImportError:
-    from typing import TypedDict
-
-    from faster_whisper.vad import VadOptions
-
-    class SpeechTimestamp(TypedDict):
-        start: int
-        end: int
+from speaches.executors.silero_vad_v5 import SpeechTimestamp, VadOptions
 
 
 MimeType = str
@@ -127,6 +116,10 @@ class AudioTranslationRequest(BaseModel):
 
 AudioTranslationResponse = tuple[str, MimeType] | openai.types.audio.Translation | openai.types.audio.TranslationVerbose
 
+# Aliases for upstream compatibility
+TranslationRequest = AudioTranslationRequest
+TranslationResponse = AudioTranslationResponse
+
 
 class AudioTranslationHandler(Protocol):
     """Handler for audio-to-text translation (e.g., Whisper)."""
@@ -134,6 +127,12 @@ class AudioTranslationHandler(Protocol):
     def handle_audio_translation_request(
         self, request: AudioTranslationRequest, **kwargs
     ) -> AudioTranslationResponse: ...
+
+
+class TranslationHandler(Protocol):
+    """Alias for AudioTranslationHandler for upstream compatibility."""
+
+    def handle_translation_request(self, request: TranslationRequest, **kwargs) -> TranslationResponse: ...
 
 
 # Text Translation Handler for MarianMT

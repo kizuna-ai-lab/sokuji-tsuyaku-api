@@ -7,9 +7,10 @@ from pydantic import BaseModel, Field
 
 from speaches.audio import convert_audio_format
 from speaches.dependencies import ExecutorRegistryDependency
-from speaches.executors import kokoro, piper
+from speaches.executors import kokoro
 from speaches.executors.kokoro import KokoroModelManager
 from speaches.executors.piper import PiperModelManager
+from speaches.executors.shared.handler_protocol import SpeechRequest
 from speaches.model_aliases import ModelId
 from speaches.routers.utils import find_executor_for_model_or_raise, get_model_card_data_or_raise
 from speaches.text_utils import strip_emojis, strip_markdown_emphasis
@@ -52,7 +53,7 @@ class CreateSpeechRequestBody(BaseModel):
 # https://platform.openai.com/docs/api-reference/audio/createSpeech
 # NOTE: `response_model=None` because `Response | StreamingResponse` are not serializable by Pydantic.
 @router.post("/v1/audio/speech", response_model=None)
-async def synthesize(  # noqa: C901, PLR0912
+async def synthesize(  # noqa: C901
     executor_registry: ExecutorRegistryDependency,
     body: CreateSpeechRequestBody,
 ) -> Response | StreamingResponse:
@@ -66,65 +67,66 @@ async def synthesize(  # noqa: C901, PLR0912
     )
 
     try:
-        if isinstance(executor.model_manager, KokoroModelManager):
-            if body.speed < 0.5 or body.speed > 2.0:
-                raise ValueError(f"Speed must be between 0.5 and 2.0, got {body.speed}")
-            if body.voice not in [v.name for v in kokoro.VOICES]:
-                if body.voice in OPENAI_SUPPORTED_SPEECH_VOICE_NAMES:
-                    logger.warning(
-                        f"Voice '{body.voice}' is not supported by the model '{body.model}'. It will be replaced with '{kokoro.VOICES[0].name}'. The behaviour of substituting OpenAI voices may be removed in the future without warning."
-                    )
-                    body.voice = kokoro.VOICES[0].name
-                else:
-                    raise HTTPException(
-                        status_code=422,
-                        detail=f"Voice '{body.voice}' is not supported. Supported voices: {kokoro.VOICES}",
-                    )
-            with executor.model_manager.load_model(body.model) as tts:
-                audio_generator = kokoro.generate_audio(
-                    tts,
-                    body.input,
-                    body.voice,
-                    speed=body.speed,
-                    sample_rate=body.sample_rate,
-                )
-                # these file formats can't easily be streamed because they have headers and/or metadata
-                if body.response_format in SUPPORTED_NON_STREAMABLE_RESPONSE_FORMATS:
-                    audio_data = b"".join([audio_bytes async for audio_bytes in audio_generator])
-                    audio_data = convert_audio_format(
-                        audio_data, body.sample_rate or kokoro.SAMPLE_RATE, body.response_format
-                    )
-                    return Response(audio_data, media_type=f"audio/{body.response_format}")
-                if body.response_format != "pcm":
-                    audio_generator = (
-                        convert_audio_format(audio_bytes, body.sample_rate or kokoro.SAMPLE_RATE, body.response_format)
-                        async for audio_bytes in audio_generator
-                    )
-                return StreamingResponse(audio_generator, media_type=f"audio/{body.response_format}")
-        elif isinstance(executor.model_manager, PiperModelManager):
-            if body.speed < 0.25 or body.speed > 4.0:
-                raise ValueError(f"Speed must be between 0.25 and 4.0, got {body.speed}")
-            # TODO: maybe check voice
-            with executor.model_manager.load_model(body.model) as piper_tts:
-                # TODO: async generator
-                audio_generator = piper.generate_audio(
-                    piper_tts, body.input, speed=body.speed, sample_rate=body.sample_rate
-                )
-                # these file formats can't easily be streamed because they have headers and/or metadata
-                if body.response_format in SUPPORTED_NON_STREAMABLE_RESPONSE_FORMATS:
-                    audio_data = b"".join(audio_bytes for audio_bytes in audio_generator)
-                    audio_data = convert_audio_format(
-                        audio_data, body.sample_rate or kokoro.SAMPLE_RATE, body.response_format
-                    )
-                    return Response(audio_data, media_type=f"audio/{body.response_format}")
-                if body.response_format != "pcm":
-                    audio_generator = (
-                        convert_audio_format(
-                            audio_bytes, body.sample_rate or piper_tts.config.sample_rate, body.response_format
+        if isinstance(executor.model_manager, (KokoroModelManager, PiperModelManager)):
+            # Validate voice for Kokoro
+            if isinstance(executor.model_manager, KokoroModelManager):
+                if body.voice not in [v.name for v in kokoro.VOICES]:
+                    if body.voice in OPENAI_SUPPORTED_SPEECH_VOICE_NAMES:
+                        logger.warning(
+                            f"Voice '{body.voice}' is not supported by the model '{body.model}'. It will be replaced with '{kokoro.VOICES[0].name}'. The behaviour of substituting OpenAI voices may be removed in the future without warning."
                         )
-                        for audio_bytes in audio_generator
-                    )
-                return StreamingResponse(audio_generator, media_type=f"audio/{body.response_format}")
+                        body.voice = kokoro.VOICES[0].name
+                    else:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"Voice '{body.voice}' is not supported. Supported voices: {kokoro.VOICES}",
+                        )
+
+            # Create speech request
+            request = SpeechRequest(
+                model=body.model,
+                voice=body.voice,
+                text=body.input,
+                speed=body.speed,
+            )
+
+            # Get Audio generator from handler
+            audio_generator = executor.model_manager.handle_speech_request(request)
+
+            # Convert Audio objects to bytes, applying sample rate conversion if needed
+            target_sample_rate = body.sample_rate
+
+            def audio_to_bytes_generator():  # type: ignore[no-untyped-def]  # noqa: ANN202
+                for audio_obj in audio_generator:
+                    if target_sample_rate and audio_obj.sample_rate != target_sample_rate:
+                        audio_obj = audio_obj.resample(target_sample_rate)  # noqa: PLW2901
+                    yield audio_obj.as_bytes()
+
+            bytes_generator = audio_to_bytes_generator()
+
+            # Handle response format conversions
+            if body.response_format in SUPPORTED_NON_STREAMABLE_RESPONSE_FORMATS:
+                audio_data = b"".join(bytes_generator)
+                sample_rate = target_sample_rate or (
+                    kokoro.SAMPLE_RATE
+                    if isinstance(executor.model_manager, KokoroModelManager)
+                    else 22050  # Piper default sample rate
+                )
+                audio_data = convert_audio_format(audio_data, sample_rate, body.response_format)
+                return Response(audio_data, media_type=f"audio/{body.response_format}")
+
+            if body.response_format != "pcm":
+                sample_rate = target_sample_rate or (
+                    kokoro.SAMPLE_RATE
+                    if isinstance(executor.model_manager, KokoroModelManager)
+                    else 22050  # Piper default sample rate
+                )
+                bytes_generator = (
+                    convert_audio_format(audio_bytes, sample_rate, body.response_format)
+                    for audio_bytes in bytes_generator
+                )
+
+            return StreamingResponse(bytes_generator, media_type=f"audio/{body.response_format}")
 
         raise HTTPException(
             status_code=500,
