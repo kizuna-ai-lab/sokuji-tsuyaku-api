@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 from httpx import AsyncClient
 from openai.resources.audio import AsyncSpeech, AsyncTranscriptions
 
+from speaches.executors.silero_vad_v5 import SileroVADModelManager
 from speaches.realtime.conversation_event_router import Conversation
 from speaches.realtime.input_audio_buffer import InputAudioBuffer
 from speaches.realtime.pubsub import EventPubSub
@@ -19,11 +20,13 @@ class SessionContext:
         transcription_client: AsyncTranscriptions,
         translation_client: AsyncClient,
         speech_client: AsyncSpeech,
+        vad_model_manager: SileroVADModelManager,
         session: Session,
     ) -> None:
         self.transcription_client = transcription_client
         self.translation_client = translation_client
         self.speech_client = speech_client
+        self.vad_model_manager = vad_model_manager
 
         self.session = session
 

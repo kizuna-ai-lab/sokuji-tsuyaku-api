@@ -10,6 +10,7 @@ from fastapi import (
 
 from speaches.dependencies import (
     ConfigDependency,
+    ExecutorRegistryDependency,
     SpeechClientDependency,
     TranscriptionClientDependency,
     TranslationClientDependency,
@@ -61,6 +62,7 @@ async def realtime(
     transcription_client: TranscriptionClientDependency,
     translation_client: TranslationClientDependency,
     speech_client: SpeechClientDependency,
+    executor_registry: ExecutorRegistryDependency,
     intent: str = "conversation",
     language: str | None = None,
 ) -> None:
@@ -94,6 +96,7 @@ async def realtime(
         transcription_client=transcription_client,
         translation_client=translation_client,
         speech_client=speech_client,
+        vad_model_manager=executor_registry.vad.model_manager,
         session=create_session_object_configuration(stt_model, tts_model, translation_model, intent, language),
     )
     message_manager = WsServerMessageManager(ctx.pubsub)

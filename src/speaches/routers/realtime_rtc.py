@@ -26,6 +26,7 @@ from openai.types.beta.realtime.error_event import Error
 from pydantic import ValidationError
 
 from speaches.dependencies import (
+    ExecutorRegistryDependency,
     SpeechClientDependency,
     TranscriptionClientDependency,
     TranslationClientDependency,
@@ -265,6 +266,7 @@ async def realtime_webrtc(
     transcription_client: TranscriptionClientDependency,
     translation_client: TranslationClientDependency,
     speech_client: SpeechClientDependency,
+    executor_registry: ExecutorRegistryDependency,
     intent: Annotated[str, Query()] = "conversation",
     language: Annotated[str | None, Query()] = None,
 ) -> Response:
@@ -285,6 +287,7 @@ async def realtime_webrtc(
         transcription_client=transcription_client,
         translation_client=translation_client,
         speech_client=speech_client,
+        vad_model_manager=executor_registry.vad.model_manager,
         session=create_session_object_configuration(stt_model, tts_model, translation_model, intent, language),
     )
     rtc_session_tasks[ctx.session.id] = set()
