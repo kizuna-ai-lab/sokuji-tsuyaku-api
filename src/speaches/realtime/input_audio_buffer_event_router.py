@@ -1,6 +1,7 @@
 import base64
 from io import BytesIO
 import logging
+from typing import Literal
 
 import openai
 from openai.types.beta.realtime.error_event import Error
@@ -39,15 +40,18 @@ empty_input_audio_buffer_commit_error = Error(
     message="Error committing input audio buffer: the buffer is empty.",
 )
 
+type SpeechTimestamp = dict[Literal["start", "end"], int]
+
 
 def vad_detection_flow(
-    input_audio_buffer: InputAudioBuffer, turn_detection: TurnDetection
+    input_audio_buffer: InputAudioBuffer, turn_detection: TurnDetection, ctx: SessionContext
 ) -> InputAudioBufferSpeechStartedEvent | InputAudioBufferSpeechStoppedEvent | None:
     audio_window = input_audio_buffer.data[-MAX_VAD_WINDOW_SIZE_SAMPLES:]
 
     speech_timestamps = to_ms_speech_timestamps(
         get_speech_timestamps(
             audio_window,
+            model_manager=ctx.vad_model_manager,
             vad_options=VadOptions(
                 threshold=turn_detection.threshold,
                 min_silence_duration_ms=turn_detection.silence_duration_ms,
@@ -108,7 +112,7 @@ def handle_input_audio_buffer_append(ctx: SessionContext, event: InputAudioBuffe
     input_audio_buffer = ctx.input_audio_buffers[input_audio_buffer_id]
     input_audio_buffer.append(audio_chunk)
     if ctx.session.turn_detection is not None:
-        vad_event = vad_detection_flow(input_audio_buffer, ctx.session.turn_detection)
+        vad_event = vad_detection_flow(input_audio_buffer, ctx.session.turn_detection, ctx)
         if vad_event is not None:
             ctx.pubsub.publish_nowait(vad_event)
 
