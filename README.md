@@ -1,29 +1,26 @@
-# Speaches
+# Sokuji Tsuyaku API
 
-`speaches` is an OpenAI API-compatible server for **real-time translation** with support for streaming transcription and speech generation. Translation is powered by [MarianMT](https://huggingface.co/Helsinki-NLP), speech-to-text by [faster-whisper](https://github.com/SYSTRAN/faster-whisper), and text-to-speech by [piper](https://github.com/rhasspy/piper) and [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M). This project aims to be Ollama, but for TTS/STT/Translation models.
+Real-time speech translation API server for Sokuji (即時通訳APIサーバー)
 
-**📢 Version 0.2.0** - **BREAKING CHANGES**: Chat completion features have been removed. This version focuses on translation services. See [CHANGELOG.md](CHANGELOG.md) and [MIGRATION_SUMMARY.md](MIGRATION_SUMMARY.md) for details.
+## About
 
-See the documentation for installation instructions and usage: [speaches.ai](https://speaches.ai/)
+Sokuji Tsuyaku API is a specialized real-time speech translation service forked and modified from an earlier version of [speaches-ai/speaches](https://github.com/speaches-ai/speaches) (upstream is now v0.8.3). It provides a streamlined pipeline for real-time speech-to-speech translation optimized for low-latency interpretation scenarios.
 
-## Features
+This project focuses on providing instant translation capabilities through WebSocket and WebRTC protocols, enabling seamless cross-language communication in real-time.
 
-- **OpenAI API compatible**: All tools and SDKs that work with OpenAI's API should work with `speaches`
-- **Real-time Translation**:
-  - Text-to-text translation using MarianMT (1000+ language pairs)
-  - Real-time audio translation: STT → Translation → TTS
-  - WebSocket and WebRTC support for low-latency translation
-- **Translation API** (`/v1/audio/translations`):
-  - Translate text between any supported language pair
-  - Automatic model download and conversion
-  - TTL-based model caching
-- **Speech-to-Text**: Powered by faster-whisper with streaming support
-- **Text-to-Speech**: Using `kokoro` (Ranked #1 in the [TTS Arena](https://huggingface.co/spaces/Pendrokar/TTS-Spaces-Arena)) and `piper` models
-- **Dynamic Model Loading**: Specify which model you want to use in the request and it will be loaded automatically, then unloaded after inactivity
-- **GPU and CPU Support**: Configurable inference device
-- **Docker Deployment**: [Deployable via Docker Compose / Docker](https://speaches.ai/installation/)
-- **[Realtime API](https://speaches.ai/usage/realtime-api)**: WebSocket and WebRTC for real-time audio translation
-- **[Highly Configurable](https://speaches.ai/configuration/)**: Environment-based configuration
+## Key Features
+
+- **Real-time Translation Pipeline**: Streamlined STT → Translation → TTS workflow
+- **OpenAI-compatible API**: Works with existing OpenAI client libraries and tools
+- **WebSocket & WebRTC Support**: Low-latency real-time communication protocols
+- **Multi-language Support**: Powered by state-of-the-art models
+  - **STT**: Whisper variants through faster-whisper
+  - **Translation**: MarianMT models (1000+ language pairs)
+  - **TTS**: Kokoro and Piper models
+- **Dynamic Model Loading**: Models loaded on-demand and cached with TTL
+- **Voice Activity Detection**: Silero VAD v5 for accurate speech detection
+- **GPU Acceleration**: Optional CUDA support for improved performance
+- **Modular Architecture**: Easily swap models for different language pairs
 
 ## Quick Start
 
@@ -31,14 +28,19 @@ See the documentation for installation instructions and usage: [speaches.ai](htt
 
 ```bash
 # Clone the repository
-git clone https://github.com/speaches-ai/speaches.git
-cd speaches
+git clone https://github.com/kizuna-ai-lab/sokuji-tsuyaku-api.git
+cd sokuji-tsuyaku-api
 
-# Update uv and install dependencies
-uv self update
+# Install dependencies (using pip)
+pip install -e .
+
+# Or using uv (if you prefer)
 uv sync
 
 # Start the server
+speaches serve --host 0.0.0.0 --port 8000
+
+# Or using uvicorn directly
 uvicorn speaches.main:create_app --factory --host 0.0.0.0 --port 8000
 ```
 
@@ -88,22 +90,22 @@ Find more models on [HuggingFace](https://huggingface.co/Helsinki-NLP).
 
 ## API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/audio/translations` | POST | Translate text between languages |
-| `/v1/audio/transcriptions` | POST | Speech-to-text transcription |
-| `/v1/audio/speech` | POST | Text-to-speech synthesis |
-| `/v1/realtime` | WebSocket | Real-time audio translation (WebSocket) |
-| `/v1/realtime` | POST | Real-time audio translation (WebRTC) |
-| `/v1/models` | GET | List available models |
+| Endpoint                    | Method    | Description                              |
+|-----------------------------|-----------|------------------------------------------|
+| `/v1/audio/translations`    | POST      | Translate text between languages         |
+| `/v1/audio/transcriptions`  | POST      | Speech-to-text transcription             |
+| `/v1/audio/speech`          | POST      | Text-to-speech synthesis                 |
+| `/v1/realtime`              | WebSocket | Real-time audio translation (WebSocket)  |
+| `/v1/realtime`              | POST      | Real-time audio translation (WebRTC)     |
+| `/v1/models`                | GET       | List available models                    |
+| `/health`                   | GET       | Health check endpoint                    |
+| `/api/ps`                   | GET       | List loaded models                       |
 
 ## Documentation
 
 - **[Translation Guide](TRANSLATION_GUIDE.md)**: Complete guide to using translation features
-- **[Migration Guide](MIGRATION_SUMMARY.md)**: Migrating from version 0.1.0 to 0.2.0
-- **[Changelog](CHANGELOG.md)**: Version history and breaking changes
-- **[Examples](examples/translation_example.py)**: Python usage examples
-- **[Full Documentation](https://speaches.ai/)**: Installation, configuration, and usage
+- **[Changelog](CHANGELOG.md)**: Version history and changes
+- **[Examples](examples/)**: Usage examples and sample code
 
 ## Configuration
 
@@ -129,19 +131,14 @@ See [TRANSLATION_GUIDE.md](TRANSLATION_GUIDE.md) for complete configuration opti
 - **Real-time Audio**: < 400ms end-to-end (STT + Translation + TTS)
 - **Model Size**: ~200MB per model (int8 quantization)
 
-## What's New in 0.2.0
+## Differences from Upstream
 
-### ✨ Added
-- **MarianMT Translation**: 1000+ language pairs
-- **Translation API**: `/v1/audio/translations` endpoint
-- **Real-time Translation**: Updated Realtime API for audio translation
+This fork specializes in real-time translation scenarios with the following modifications:
 
-### ❌ Removed (Breaking Changes)
-- **Chat Completions**: `/v1/chat/completions` endpoint removed
-- **Audio Chat UI**: Gradio audio chat tab removed
-- **External LLM**: No longer requires OpenAI/Ollama
-
-See [CHANGELOG.md](CHANGELOG.md) for complete release notes.
+- **Simplified Pipeline**: Optimized STT → Translation → TTS flow for minimal latency
+- **Translation-First Design**: API and internals optimized specifically for translation use cases
+- **Enhanced Model Support**: Focus on translation-specific model optimization
+- **Streamlined Dependencies**: Removed unnecessary components for cleaner deployment
 
 ## Examples
 
@@ -185,17 +182,27 @@ asyncio.run(translate_batch())
 
 See [examples/translation_example.py](examples/translation_example.py) for more examples.
 
-## Contributing
+## Support
 
-Please create an issue if you find a bug, have a question, or a feature suggestion.
+For issues and questions:
+- Create an issue in this repository
+- Contact the Sokuji team
 
 ## License
 
-MIT License - see LICENSE file for details.
+MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
+This project is based on [speaches-ai/speaches](https://github.com/speaches-ai/speaches), an excellent open-source speech processing framework. We are grateful to the speaches team for their foundational work.
+
+### Key Technologies Used
 - [MarianMT](https://huggingface.co/Helsinki-NLP) for translation models
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for speech-to-text
 - [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) and [Piper](https://github.com/rhasspy/piper) for text-to-speech
 - [CTranslate2](https://opennmt.net/CTranslate2/) for optimized inference
+- [Silero VAD](https://github.com/snakers4/silero-vad) for voice activity detection
+
+---
+
+**Sokuji** - Instant Translation for Real-time Communication

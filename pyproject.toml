@@ -1,7 +1,24 @@
 [project]
-name = "speaches"
-version = "0.2.0"
+name = "sokuji-tsuyaku-api"
+version = "0.1.0"
+description = "Real-time speech translation API server for Sokuji"
+authors = [
+    {name = "Kizuna AI Lab"},
+]
+readme = "README.md"
+license = {text = "MIT"}
 requires-python = "==3.12.*"
+keywords = ["speech", "translation", "realtime", "api", "sokuji", "tsuyaku"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
 # https://packaging.python.org/en/latest/specifications/version-specifiers/#id5
 dependencies = [
     "ctranslate2>=4.5.0",
@@ -71,6 +88,16 @@ opentelemetry = [
     "opentelemetry-instrumentation-openai-v2>=2.1b0",
     "opentelemetry-instrumentation-openai>=0.37.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/kizuna-ai-lab/sokuji-tsuyaku-api"
+Repository = "https://github.com/kizuna-ai-lab/sokuji-tsuyaku-api.git"
+Issues = "https://github.com/kizuna-ai-lab/sokuji-tsuyaku-api/issues"
+Documentation = "https://github.com/kizuna-ai-lab/sokuji-tsuyaku-api#readme"
+
+[project.scripts]
+sokuji-tsuyaku = "speaches.__main__:main"
+speaches = "speaches.__main__:main"
 
 [build-system]
 requires = ["hatchling"]
