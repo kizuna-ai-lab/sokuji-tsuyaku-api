@@ -4,7 +4,7 @@ Real-time speech translation API server for Sokuji (即時通訳APIサーバー)
 
 ## About
 
-Sokuji Tsuyaku API is a specialized real-time speech translation service forked and modified from an earlier version of [speaches-ai/speaches](https://github.com/speaches-ai/speaches) (upstream is now v0.8.3). It provides a streamlined pipeline for real-time speech-to-speech translation optimized for low-latency interpretation scenarios.
+Sokuji Tsuyaku API is a specialized real-time speech translation service forked from [speaches-ai/speaches](https://github.com/speaches-ai/speaches) (a TTS/STT server, upstream is now v0.8.3) and extensively modified to focus on real-time translation. We've transformed the original audio processing capabilities into a streamlined STT → Translation → TTS pipeline optimized for low-latency interpretation scenarios.
 
 This project focuses on providing instant translation capabilities through WebSocket and WebRTC protocols, enabling seamless cross-language communication in real-time.
 
