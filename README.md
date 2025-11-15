@@ -48,7 +48,7 @@ uvicorn speaches.main:create_app --factory --host 0.0.0.0 --port 8000
 
 ```bash
 # Translate English to Chinese
-curl -X POST "http://localhost:8000/v1/audio/translations" \
+curl -X POST "http://localhost:8000/v1/translations" \
   -F "text=Hello, how are you?" \
   -F "model=Helsinki-NLP/opus-mt-en-zh"
 
@@ -92,7 +92,7 @@ Find more models on [HuggingFace](https://huggingface.co/Helsinki-NLP).
 
 | Endpoint                    | Method    | Description                              |
 |-----------------------------|-----------|------------------------------------------|
-| `/v1/audio/translations`    | POST      | Translate text between languages         |
+| `/v1/translations`          | POST      | Translate text between languages         |
 | `/v1/audio/transcriptions`  | POST      | Speech-to-text transcription             |
 | `/v1/audio/speech`          | POST      | Text-to-speech synthesis                 |
 | `/v1/realtime`              | WebSocket | Real-time audio translation (WebSocket)  |
@@ -100,6 +100,20 @@ Find more models on [HuggingFace](https://huggingface.co/Helsinki-NLP).
 | `/v1/models`                | GET       | List available models                    |
 | `/health`                   | GET       | Health check endpoint                    |
 | `/api/ps`                   | GET       | List loaded models                       |
+
+### WebSocket Realtime API
+
+Connect to the realtime endpoint with model configuration:
+```
+ws://localhost:8000/v1/realtime?model={stt_model}|{tts_model}|{translation_model}
+```
+
+Example:
+```javascript
+const ws = new WebSocket(
+  'ws://localhost:8000/v1/realtime?model=Systran/faster-distil-whisper-small.en|speaches-ai/Kokoro-82M-v1.0-ONNX|Helsinki-NLP/opus-mt-en-zh'
+);
+```
 
 ## Documentation
 
