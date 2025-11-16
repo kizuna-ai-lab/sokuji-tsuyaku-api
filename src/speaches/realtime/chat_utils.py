@@ -67,7 +67,7 @@ def create_completion_params(
     )
 
 
-def conversation_item_to_chat_message(  # noqa: PLR0911
+def conversation_item_to_chat_message(  # noqa: PLR0911, C901
     item: ConversationItem,
 ) -> ChatCompletionMessageParam | None:
     match item.type:
@@ -83,7 +83,9 @@ def conversation_item_to_chat_message(  # noqa: PLR0911
                     assert content.text, content
                     return ChatCompletionAssistantMessageParam(role="assistant", content=content.text)
                 case "audio":
-                    assert content.transcript, content
+                    if not content.transcript:
+                        logger.error(f"Conversation item doesn't have a non-empty transcript: {item}")
+                        return None
                     return ChatCompletionAssistantMessageParam(role="assistant", content=content.transcript)
                 case "input_text":
                     assert content.text, content

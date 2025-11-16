@@ -179,6 +179,18 @@ class ResponseHandler:
             response.raise_for_status()
             translated_text = response.json()["text"]
 
+            if not translated_text:
+                logger.warning(
+                    f"Translation returned empty text for input: {source_text[:50]}... "
+                    f"Model {self.translation_model} may not support this language direction"
+                )
+                error_message = (
+                    f"Translation model {self.translation_model} does not support this language. "
+                    "Please check your input language or configure a different translation model."
+                )
+                await self.conversation_item_message_text_handler(error_message)
+                return
+
             if self.configuration.modalities == ["text"]:
                 handler = self.conversation_item_message_text_handler
             else:
