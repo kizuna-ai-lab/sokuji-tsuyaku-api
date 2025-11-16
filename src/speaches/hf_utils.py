@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from functools import lru_cache
 import logging
 from pathlib import Path
 import shutil
@@ -39,10 +40,7 @@ class HfModelFilter(BaseModel):
         # convert None to an empty set so it's easier to work with
         model_card_data_tags = set(model_card_data.tags) if model_card_data.tags is not None else set()
         # If model_tags is provided, combine it with card_data.tags for more comprehensive filtering
-        if model_tags is not None:
-            all_tags = model_card_data_tags | set(model_tags)
-        else:
-            all_tags = model_card_data_tags
+        all_tags = model_card_data_tags | set(model_tags) if model_tags is not None else model_card_data_tags
 
         if self.library_name is not None:
             # Handle both 'library_name' (correct) and 'library' (legacy/incorrect) fields
@@ -84,6 +82,16 @@ def get_cached_model_repos_info() -> list[huggingface_hub.CachedRepoInfo]:
     return cache_repos_info
 
 
+@lru_cache(maxsize=256)
+def get_model_info_tags_cached(repo_id: str) -> list[str] | None:
+    try:
+        model_info = huggingface_hub.model_info(repo_id)
+        return model_info.tags
+    except Exception:  # noqa: BLE001
+        logger.debug(f"Failed to fetch model info for {repo_id}")
+        return None
+
+
 def get_model_card_data_from_cached_repo_info(
     cached_repo_info: huggingface_hub.CachedRepoInfo,
 ) -> tuple[huggingface_hub.ModelCardData, list[str] | None] | None:
@@ -97,12 +105,7 @@ def get_model_card_data_from_cached_repo_info(
     model_card = huggingface_hub.ModelCard.load(readme_file_path, repo_type="model")
     assert isinstance(model_card.data, huggingface_hub.ModelCardData)
 
-    model_tags: list[str] | None = None
-    try:
-        model_info = huggingface_hub.model_info(cached_repo_info.repo_id)
-        model_tags = model_info.tags
-    except Exception:
-        pass
+    model_tags = get_model_info_tags_cached(cached_repo_info.repo_id)
 
     return model_card.data, model_tags
 
