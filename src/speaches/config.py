@@ -41,6 +41,16 @@ class MarianConfig(BaseModel):
     model_ttl: int = 300
 
 
+class NllbConfig(BaseModel):
+    """Configuration for NLLB translation models."""
+
+    inference_device: Device = "auto"
+    device_index: int | list[int] = 0
+    model_ttl: int = 300
+    beam_size: int = 4
+    max_length: int = 200
+
+
 class OrtOptions(BaseModel):
     exclude_providers: list[str] = ["TensorrtExecutionProvider"]
     """
@@ -134,5 +144,8 @@ class Config(BaseSettings):
 
     marian: MarianConfig = MarianConfig()
     """Configuration for MarianMT translation models."""
+
+    nllb: NllbConfig = NllbConfig()
+    """Configuration for NLLB translation models."""
 
     unstable_ort_opts: OrtOptions = OrtOptions()

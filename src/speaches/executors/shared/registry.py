@@ -7,6 +7,7 @@ if TYPE_CHECKING:
 
 from speaches.executors.kokoro import KokoroModelManager, kokoro_model_registry
 from speaches.executors.marian import MarianModelManager, marian_model_registry
+from speaches.executors.nllb import NllbModelManager, nllb_model_registry
 from speaches.executors.parakeet import ParakeetModelManager, parakeet_model_registry
 from speaches.executors.piper import PiperModelManager, piper_model_registry
 from speaches.executors.pyannote import PyannoteModelManager, pyannote_model_registry
@@ -53,6 +54,12 @@ class ExecutorRegistry:
             model_registry=marian_model_registry,
             task="translation",
         )
+        self._nllb_executor = Executor(
+            name="nllb",
+            model_manager=NllbModelManager(config.nllb.model_ttl, config.nllb),
+            model_registry=nllb_model_registry,
+            task="translation",
+        )
         self._vad_executor = Executor(
             name="vad",
             model_manager=SileroVADModelManager(config.vad_model_ttl, config.unstable_ort_opts),
@@ -74,7 +81,7 @@ class ExecutorRegistry:
 
     @property
     def translation(self):  # noqa: ANN201
-        return (self._marian_executor,)
+        return (self._marian_executor, self._nllb_executor)
 
     @property
     def vad(self) -> Executor:
@@ -88,5 +95,6 @@ class ExecutorRegistry:
             self._kokoro_executor,
             self._pyannote_executor,
             self._marian_executor,
+            self._nllb_executor,
             self._vad_executor,
         )

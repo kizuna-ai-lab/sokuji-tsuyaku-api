@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 
 from speaches.dependencies import ExecutorRegistryDependency
 from speaches.executors.marian import MarianModelManager
+from speaches.executors.nllb import NllbModelManager
 from speaches.executors.shared.handler_protocol import TextTranslationRequest
 from speaches.model_aliases import ModelId
 from speaches.routers.utils import find_executor_for_model_or_raise, get_model_card_data_or_raise
@@ -25,14 +26,14 @@ async def translate_text(
 ) -> JSONResponse:
     """Text-to-text translation endpoint.
 
-    Translate text from one language to another using MarianMT models.
+    Translate text from one language to another using translation models (MarianMT or NLLB).
 
     Args:
         executor_registry: Registry containing translation model executors
         text: The source text to translate
-        model: The MarianMT model ID (e.g., Helsinki-NLP/opus-mt-en-zh)
-        source_language: Optional source language code
-        target_language: Optional target language code
+        model: The translation model ID (e.g., Helsinki-NLP/opus-mt-en-zh or Xenova/nllb-200-distilled-600M)
+        source_language: Source language code (required for NLLB)
+        target_language: Target language code (required for NLLB)
 
     Returns:
         JSONResponse containing translated text and language codes
@@ -42,8 +43,7 @@ async def translate_text(
 
     executor = find_executor_for_model_or_raise(model, model_card_data, executor_registry.translation, model_tags)
 
-    if isinstance(executor.model_manager, MarianModelManager):
-        # Create translation request using the handler protocol
+    if isinstance(executor.model_manager, MarianModelManager | NllbModelManager):
         translation_request = TextTranslationRequest(
             text=text,
             model=model,
@@ -51,10 +51,8 @@ async def translate_text(
             target_language=target_language,
         )
 
-        # Use the handler protocol method
         response = executor.model_manager.handle_text_translation_request(translation_request)
 
-        # Return the response as JSON
         return JSONResponse(
             content=response.model_dump(),
             media_type="application/json",
