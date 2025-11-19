@@ -75,6 +75,37 @@ def create_app() -> FastAPI:
     # MediaStreamError is expected when clients disconnect
     logging.getLogger("aiortc.rtcrtpsender").setLevel(logging.ERROR)
 
+    # WORKAROUND: CTranslate2 cuDNN library loading issue
+    #
+    # Problem: CTranslate2 wheel package is incomplete - it bundles cuDNN 9.1.0 main library
+    # but is missing libcudnn_cnn.so.9.1.0. When running under Uvicorn, the library loading
+    # fails with "Unable to load libcudnn_cnn.so.9.1.0" even though:
+    # 1. We copied the file from system cuDNN 9.15.0 to ctranslate2.libs/
+    # 2. We set LD_LIBRARY_PATH to point to ctranslate2.libs/
+    #
+    # Root cause: CTranslate2's binary has hardcoded RPATH=$ORIGIN/../ctranslate2.libs which
+    # takes priority over LD_LIBRARY_PATH. In Uvicorn's complex async environment with multiple
+    # event loops and the httpx.AsyncClient making internal ASGI calls, the library loading
+    # mechanism fails to properly search the LD_LIBRARY_PATH fallback paths.
+    #
+    # Solution: Use ctypes.CDLL with RTLD_GLOBAL to preload libcudnn_cnn.so into the global
+    # symbol table BEFORE any other library tries to load it. This ensures the correct version
+    # is available to all subsequent library loads, regardless of RPATH or loading context.
+    import ctypes
+    import pathlib
+
+    ctranslate2_libs = (
+        pathlib.Path(__file__).parent.parent.parent / ".venv/lib/python3.12/site-packages/ctranslate2.libs"
+    )
+    cudnn_file = ctranslate2_libs / "libcudnn_cnn.so.9.1.0"
+
+    if cudnn_file.exists():
+        try:
+            ctypes.CDLL(str(cudnn_file), mode=ctypes.RTLD_GLOBAL)
+            logger.debug(f"Preloaded cuDNN CNN library from {cudnn_file}")
+        except OSError as e:
+            logger.warning(f"Failed to preload cuDNN library: {e}. CTranslate2 CUDA inference may fail.")
+
     logger.debug(f"Config: {config}")
 
     # Create main app WITHOUT global authentication
